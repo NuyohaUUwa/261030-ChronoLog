@@ -1,0 +1,65 @@
+# Dependencies and caches
+node_modules/
+.npm/
+.gradle/
+.cache/
+.vite/
+coverage/
+
+# Generated output; Gradle Wrapper is intentionally tracked
+dist/
+build/
+/bin/
+/out/
+/server/assets/web_dist/
+*.exe
+*.test
+*.apk
+*.aab
+*.log
+*.tsbuildinfo
+
+# Runtime data and backups (never blanket-ignore Markdown notes)
+/data/
+/data-dev/
+/data-test/
+/data-acceptance/
+/backups/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Local configuration and credentials; examples remain trackable
+.env
+.env.*
+!.env.example
+!.env.*.example
+/config/config.yaml
+/config/prompts.yaml
+*.local.yaml
+*.local.yml
+*.local.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+keystore.properties
+local.properties
+
+# Local editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
