@@ -1,10 +1,12 @@
 # ChronoLog · Windows 本机开发指南
 
-更新日期：2026-11-05（Asia/Shanghai）。本指南区分已验证的工具环境与待实现的应用流程。当前只有文档与仓库配置，没有 `server`、`web`、配置加载器和部署文件；第二节以后的应用启动、打包、备份等命令是后续实施示例，不能在当前目录直接运行。
+更新日期：2026-11-06（Asia/Shanghai）。本指南区分已验证的工具环境与待实现的应用流程。当前只有文档与仓库配置，没有 `server`、`web`、配置加载器和部署文件；第二节以后的应用启动、打包、备份等命令是后续实施示例，不能在当前目录直接运行。
 
 ## 一、设备分工与环境核验
 
-Windows 项目目录为 `D:\AppPrograms\261030-ChronoLog`。本机原生运行 Go 与 Vite，使用浏览器完成日常调试；N100 Linux 使用 Docker 构建镜像并运行应用。本机不需要 Docker、WSL2 或 Make。
+Windows 项目目录为 `D:\AppPrograms\261030-ChronoLog`。本机原生运行 Go 与 Vite，完成浏览器和 Android 真机调试、功能验收及产物构建；N100 Linux 仅使用 Docker 正式运行预构建镜像。本机日常不需要 Docker、WSL2 或 Make，正式发布前的 Linux 容器镜像构建能力另行补齐。
+
+**N100 连接必须先取得用户对本次目的和操作范围的明确同意。** 包括 SSH、SCP、HTTP／AI API、只读检查、连通性探测、端口转发和浏览器访问。历史可连接记录不是当前授权；日常开发禁止连接 N100，模拟服务失败时不得自动回退正式服务。完整规则见 [AGENTS.md](AGENTS.md)。
 
 ### 1. 本机检查结果
 
@@ -15,9 +17,10 @@ Windows 项目目录为 `D:\AppPrograms\261030-ChronoLog`。本机原生运行 G
 | Go | 1.27.0 windows/amd64，`CGO_ENABLED=0` | 工具可用；`go test fmt encoding/json` 通过 |
 | Node.js／npm | 24.13.0／11.6.2，Node 内置模块检查通过 | 可用于前端；实际工程依赖尚未安装验证 |
 | 浏览器与编辑器 | Chrome、Edge、VS Code 可用 | 可进行前端调试 |
-| SSH／SCP | OpenSSH 可用，已连接 `fun@10.126.126.9` | 可进行远程检查及后续交付 |
+| SSH／SCP | OpenSSH 可用，曾在先前用户授权下连接 N100 | 后续每次连接仍须用户明确同意，仅用于正式部署／运维 |
 | Java | JDK 11.0.28，`JAVA_HOME` 指向该版本 | 不据此认定可构建未来 Android 工程 |
-| Android | 未发现 Android Studio、完整 SDK、`sdkmanager`；PATH 无 ADB，手机助手目录有 ADB | APK 工具链待补齐 |
+| Gradle | 用户缓存内 8.14.3 `bin` 分发完整，`--version` 可运行 | 通过匹配版本的项目 Wrapper 复用，无需全局安装 |
+| Android | 未发现完整 SDK／Android Studio；手机助手有 ADB 1.0.41（34.0.3）和 1.0.40 | 另补 JDK 21 和官方 SDK／Platform Tools，Android Studio 可选 |
 | Docker／Make | 当前 PATH 未找到 | 本机开发不要求安装 |
 
 本机 npm 使用 `https://registry.npmmirror.com/`，Go 使用 `https://proxy.golang.org,direct` 与 `sum.golang.org`。已验证这些服务以及官方 npm、Android SDK 元数据、Gradle 元数据端点可达；未验证全部包、镜像或 SDK 文件下载。检查时本机 5173、8080、18088、3000 端口均未发现监听，启动前需要复查。
@@ -37,39 +40,22 @@ Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
     Where-Object { $_.LocalPort -in 5173,8080,18088,3000 }
 ```
 
-### 2. N100 检查结果
+### 2. N100 历史检查记录（不代表当前连接许可）
+
+以下来自此前获用户授权的检查，本轮没有连接或复查 N100。保留用于正式运行规划，不作为开发步骤。
 
 | 项目 | 2026-11-05 实测 | 结论 |
 |---|---|---|
-| 连接 | `ssh fun@10.126.126.9`，已有认证可用 | SSH 已通 |
+| 连接 | `fun@10.126.126.9`，历史检查认证可用 | 地址仅供获准后的正式部署／运维使用 |
 | 系统 | Ubuntu 24.04.5 LTS，Linux x86_64 | 与目标 linux/amd64 一致 |
 | 容器工具 | Docker 29.9.2、Compose 5.6.1、Buildx 0.38.1 | 当前用户可访问 Docker |
-| 资源 | 可用内存约 3.3 GiB，可用磁盘约 1.7 TiB | 构建峰值资源尚待实际测量 |
+| 资源 | 可用内存约 3.3 GiB，可用磁盘约 1.7 TiB | 仅为历史快照；不在 N100 构建或开发压测 |
 | 应用端口 | 18088 未被占用 | 可作为正式端口候选，部署前复查 |
 | AI 服务 | `127.0.0.1:3000/v1/models` 返回 401 | 服务可达，需要凭据验证 |
 | 域名入口 | 用户级 Cloudflare Tunnel 服务 active | 项目域名及路由尚未验证 |
 | 旧目录 | `/home/fun/桌面/ChronoLog` 只有原有三份文档，与本机原始文件哈希一致 | 未发现源码或 Git 历史，正式运行目录另行确定 |
 
-Windows PowerShell 发起连接：
-
-```powershell
-ssh fun@10.126.126.9
-```
-
-连接后，在 N100 Linux shell 执行以下只读检查：
-
-```bash
-uname -srm
-docker version
-docker compose version
-docker buildx version
-docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}'
-free -h
-df -h /home
-ss -ltn
-```
-
-资源、端口和服务状态是检查时快照，不能保证后续仍相同。完整核验记录见[初始化计划](开发环境与项目初始化计划.md)。
+资源、端口和服务状态是检查时快照，不能保证后续仍相同。如正式部署／运维需要复查，先说明目标和具体操作，取得用户同意后才连接。日常开发不执行远程预检，Android 本机复核见 [Android 本机开发计划](Android本机开发计划.md)。
 
 ## 二、首次启动前提与配置（待实现）
 
@@ -153,9 +139,9 @@ Go 逻辑变更在 `server` 运行相关包测试；整体检查时使用 `go te
 
 | 请求发起方 | AI 基地址 | 说明 |
 |---|---|---|
-| Windows Go 服务端 | `http://10.126.126.9:3000/v1` | 已验证网络通，返回 401，真实调用待验证 |
-| N100 宿主机 | `http://127.0.0.1:3000/v1` | `localhost` 指 N100 自身 |
-| N100 ChronoLog 容器 | `http://host.docker.internal:3000/v1` | Compose 需设置 `host-gateway`；容器内连通性待验证 |
+| Windows Go 开发服务 | `AI_MODE=mock`，不发远程请求 | 可另用独立本机模拟服务，禁止指向 N100 |
+| N100 正式服务（宿主机） | `http://127.0.0.1:3000/v1` | 仅正式运行配置；代理检查须事先获同意 |
+| N100 正式服务（容器） | `http://host.docker.internal:3000/v1` | Compose 配置宿主机网关；不能作为本机开发地址 |
 | 浏览器／APK | 不连接 AI | 调用 Go 业务 API，不能持有 AI 密钥 |
 
 | 现象 | 检查方式 |
@@ -164,53 +150,34 @@ Go 逻辑变更在 `server` 运行相关包测试；整体检查时使用 `go te
 | `go:embed` 找不到文件 | 开发使用已实现的 `dev` 构建；生产先构建并复制前端，不能用空占位页面交付 |
 | 浏览器 API 404／502 | 确认 Go 正在运行、Vite 代理 `/api` 保留路径、API 前缀为 `/api/v1` |
 | 真实 AI 返回 401 | 检查服务端配置的有效密钥，不把密钥粘到日志、浏览器或 Git 中 |
-| 容器访问 AI 失败 | 复查 `extra_hosts`、宿主机监听地址、防火墙和容器内请求路径 |
-| APK 构建提示 Java 不兼容 | 使用项目要求的 Android Studio 配套 JDK，确认终端 Gradle 使用同一版本 |
+| 正式容器访问 AI 失败 | 先取得用户对本次排障连接的同意，再在授权范围内核查配置与网络 |
+| APK 构建提示 Java 不兼容 | 在项目 PowerShell 中设置独立 JDK 21，确认 `gradlew.bat --version` 使用同一版本 |
 | Windows 能访问但手机失败 | 手机的 `localhost` 是手机自身；检查实际 IP、监听地址、网络与 CORS |
 
-## 五、N100 阶段验收与正式运行（待实现）
+## 五、本机验收与正式交付边界（待实现）
 
-只在阶段完成后交付源码和构建文件，由 N100 构建 linux/amd64 镜像。源码包不包含 `.git`、个人数据和真实配置；可在本机干净提交后用 `git archive` 导出到项目目录外，再通过 SCP 传到 N100 经确认的源码目录。远程正式运行目录不默认复用桌面文档副本。
+服务端相关功能、失败场景、索引重建和恢复验证按变更在本机独立测试数据上完成；Android 首包只做安装、启动及基础记事检查，不重复整套后端测试。移除 N100 阶段验收容器、18089 测试端口和开发 SSH 隧道安排。
 
-部署前确保实际 Dockerfile、Compose 文件、配置模板和启动入口均已实现；镜像基底版本、锁文件和实际构建结果已核验。在 N100 Linux shell、已确认的源码根目录执行构建示例：
-
-```bash
-docker build -t chronolog:<commit> .
-```
-
-`<commit>` 是要替换的 Git 提交标识，不是可直接执行的参数。Compose 使用同一镜像、不同项目名和独立 `.env`：正式运行候选端口 18088；临时验收候选端口 18089。两者部署前都要检查占用。禁止设置固定 `container_name`，以免临时验收与正式容器冲突。
-
-N100 Linux shell、已确认的运行根目录，准备好 Compose 和对应配置后执行的规划示例：
-
-```bash
-docker compose --env-file acceptance/.env -p chronolog-acceptance up -d
-docker compose --env-file acceptance/.env -p chronolog-acceptance ps
-docker compose --env-file acceptance/.env -p chronolog-acceptance logs --tail 50
-```
-
-验收配置使用独立配置目录、独立数据目录，默认模拟通知，避免向正式渠道重复发送。验证原稿持久化、重启保留、登录隔离、AI 状态、检索、日历和提醒后，按正式更新任务授权进行更新。验收结束仅停掉对应项目容器，不删除正式数据。
-
-Compose 模板默认绑定 N100 回环地址；Windows 查看验收服务时，在本机 PowerShell 运行 `ssh -N -L 18089:127.0.0.1:18089 fun@10.126.126.9`，保持会话并用浏览器打开 `http://127.0.0.1:18089`。正式域名由 N100 宿主机上的隧道转发到 18088，实际路由待验证。
-
-备份至少包含完整数据目录、账号与用户配置、提示词及实际部署配置。首次采用停写备份，避免文件与数据库处于不同时间点；恢复只在新的隔离目录验证，索引可重建但账号凭据不能从笔记推导。正式升级保留上一版镜像和备份，回滚前确认数据格式兼容。具体备份、恢复命令待部署目录确定后补齐。
-
-## 六、Android（工具链与工程均待补齐）
-
-安装 Android Studio 及其配套 JDK、SDK、Platform Tools；使用项目对应的 Gradle Wrapper，无需全局安装 Gradle。优先使用真机调试，模拟器非必需；不要把手机助手的 ADB 当作完整 Android 开发环境。
-
-2026-11-05 查阅的 [Capacitor 官方环境要求](https://capacitorjs.com/docs/getting-started/environment-setup)说明 Capacitor 8 需要 Node.js 22+、Android Studio 2025.2.1+，Android Studio 可提供配套 JDK。项目具体版本尚未锁定，安装时按最终 Capacitor、AGP、SDK 组合确认，保留现有 JDK 11 供其他项目使用。
-
-未来 Android 工程存在且依赖锁定后，在 Windows PowerShell、`web` 执行：
+正式镜像由开发侧构建。当前本机没有 Docker，发布准备时需单独补齐本机 Linux 容器构建能力；在此之前可继续原生 Go／Web／Android 开发，不能将镜像构建移到 N100。实际 Dockerfile、锁文件、应用入口与构建工具齐备后，在开发机 PowerShell、源码根目录执行规划示例：
 
 ```powershell
-npm ci
-npm run build
-npx cap sync android
-Set-Location android
-.\gradlew.bat assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+$releaseTag = 'replace-with-commit-id'
+docker build --platform linux/amd64 -t "chronolog:$releaseTag" .
+docker save -o "../chronolog-$releaseTag.tar" "chronolog:$releaseTag"
 ```
 
-`npx cap add android` 仅首次创建工程时执行，重复开发只需 sync。调试包可直接安装；Release 必须配置本地签名、版本号和稳定签名密钥，未签名包不能作为正式交付。签名文件、密码和本机 SDK 路径不提交，保留受控备份。
+先替换提交标识；当前缺少源码与 Docker，以上命令尚不可运行。确认镜像与已签名 APK、变更说明及回滚方案在本机可审查后，向用户说明正式发布所需的连接目标与操作范围，等待明确同意。获准后才传输产物、加载镜像和更新正式服务，N100 不接收用于远程编译的源码工作流。
 
-Debug 内网 HTTP 与 Release HTTPS 分开配置。首版通知规划使用 Ntfy Android 客户端接收远程推送，ChronoLog APK 本身不自动获得原生推送能力；先验证通知打开笔记 Web 链接，再单独实现并验证 Android App Links 或其他深层链接。具体打包及通知约定见[实战手册](全栈开发实战手册.md)。
+备份至少包含完整数据目录、账号与用户配置、提示词及部署配置；正式停写备份、文件传输、重启及回滚须属于本次同意范围。恢复演练使用本机隔离目录，默认使用合成测试数据；确需拷贝正式数据时必须另有对应同意。具体操作命令在正式部署目录确定且获准后补齐。
+
+## 六、Android 本机方案（待补齐与实现）
+
+完整工具清单、版本依据、安装缺口和命令见 [Android 本机开发计划](Android本机开发计划.md)。核心安排：
+
+- 复用 Node.js 24、VS Code、Go 和 Gradle 8.14.3 缓存；保留系统 JDK 11，仅在项目终端使用独立 JDK 21。
+- 补齐官方 SDK 管理工具、平台包与 Platform Tools；无需全局 Gradle，Android Studio／模拟器按需使用。
+- USB 真机通过 `adb reverse` 连接 Windows Go，Debug API 为本机映射地址；不使用 N100、正式域名或远程隧道调试。
+- 首版直接交付带调试签名的 Debug APK，只检查安装、启动、登录和笔记保存／查看。无可用真机时先提供构建产物与未测说明，由用户安装反馈；不等待完整适配或测试矩阵。
+- 后续根据用户需求再安排 Release 签名与升级验证；构建中设置正式 URL 不代表允许代理访问正式服务，访问仍需用户同意。
+
+首版通知规划使用 Ntfy Android 客户端接收正式推送，日常只测试本机模拟通知；APK 原生推送与 App Links 仍需独立实现和本机验证。
