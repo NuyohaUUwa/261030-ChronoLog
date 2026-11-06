@@ -28,8 +28,8 @@ var noteIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 type Reminder struct {
 	ID                 string `yaml:"id" json:"id"`
 	Title              string `yaml:"title" json:"title"`
-	RemindAt           string `yaml:"remind_at" json:"remind_at"` // 带时区偏移 RFC 3339
-	Status             string `yaml:"status" json:"status"`       // pending | completed | cancelled
+	RemindAt           string `yaml:"remind_at" json:"remind_at"`                     // 带时区偏移 RFC 3339
+	Status             string `yaml:"status" json:"status"`                           // pending | completed | cancelled
 	NotificationStatus string `yaml:"notification_status" json:"notification_status"` // pending | sent | failed
 	Reason             string `yaml:"reason,omitempty" json:"reason,omitempty"`
 }
@@ -38,7 +38,9 @@ type NoteFrontMatter struct {
 	ID               string     `yaml:"id" json:"id"`
 	CreatedAt        string     `yaml:"created_at" json:"created_at"`
 	UpdatedAt        string     `yaml:"updated_at" json:"updated_at"`
-	Revision         int64      `yaml:"revision" json:"revision"` // 自增版本号防并发覆写
+	Revision         int64      `yaml:"revision" json:"revision"`                                   // 自增版本号防并发覆写
+	CurrentTaskID    string     `yaml:"current_task_id,omitempty" json:"current_task_id,omitempty"` // 异步任务唯一标识防旧任务竞态
+	UserEdited       bool       `yaml:"user_edited,omitempty" json:"user_edited,omitempty"`         // 用户主动编辑标记
 	RawContent       string     `yaml:"raw_content" json:"raw_content"`
 	ProcessingStatus string     `yaml:"processing_status" json:"processing_status"` // processing | ready | failed
 	FailureReason    string     `yaml:"failure_reason,omitempty" json:"failure_reason,omitempty"`
@@ -124,10 +126,25 @@ func GenerateNoteID(t time.Time) string {
 	return fmt.Sprintf("%s_%s", t.Format("20060102_150405"), randSuffix)
 }
 
+// GenerateTaskID 生成唯一的异步任务 ID 防止竞态覆盖
+func GenerateTaskID() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("task_%d_%s", time.Now().UnixNano(), hex.EncodeToString(b))
+}
+
+// GenerateReminderID 生成唯一的提醒项 ID
+func GenerateReminderID() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("rem_%d_%s", time.Now().UnixNano(), hex.EncodeToString(b))
+}
+
 // SaveNoteRaw 创建并原子落盘初始随手记（保存权威原稿，保留全部空白字符）
 func (s *MarkdownStore) SaveNoteRaw(email, rawContent string, loc *time.Location) (*Note, error) {
 	now := time.Now().In(loc)
 	id := GenerateNoteID(now)
+	taskID := GenerateTaskID()
 	timeStr := now.Format(time.RFC3339Nano)
 
 	note := &Note{
@@ -136,6 +153,8 @@ func (s *MarkdownStore) SaveNoteRaw(email, rawContent string, loc *time.Location
 			CreatedAt:        timeStr,
 			UpdatedAt:        timeStr,
 			Revision:         1,
+			CurrentTaskID:    taskID,
+			UserEdited:       false,
 			RawContent:       rawContent, // 无损保留原样，不截断空白
 			ProcessingStatus: "processing",
 			Tags:             []string{},
@@ -390,9 +409,10 @@ func (s *MarkdownStore) ListAllNotes(email string) ([]*Note, error) {
 		}
 		noteID := strings.TrimSuffix(entry.Name(), ".md")
 		note, err := s.ReadNote(email, noteID)
-		if err == nil && note != nil {
-			notes = append(notes, note)
+		if err != nil {
+			return nil, fmt.Errorf("读取笔记 %s 失败，取消重建", noteID)
 		}
+		notes = append(notes, note)
 	}
 
 	return notes, nil

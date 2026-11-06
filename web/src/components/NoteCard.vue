@@ -122,6 +122,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { Clock, Bell, CheckCircle, Check, Trash2, Sparkles, AlertCircle, RotateCcw, Tag, Eye, ChevronDown, FileText } from 'lucide-vue-next';
 import { Note } from '../api/client';
 import { useNotesStore } from '../stores/notes';
@@ -135,7 +136,20 @@ const showRaw = ref(false);
 
 const renderedPolishedContent = computed(() => {
   if (!props.note.polished_content) return '';
-  return marked.parse(props.note.polished_content, { breaks: true, gfm: true }) as string;
+  const rawHtml = marked.parse(props.note.polished_content, { breaks: true, gfm: true }) as string;
+  const safeDOM = DOMPurify.sanitize(rawHtml, {
+    RETURN_DOM: true,
+    ALLOWED_TAGS: [
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'b', 'i', 'strong', 'em', 'strike', 's', 'code', 'pre',
+      'ul', 'ol', 'li', 'blockquote', 'hr', 'br', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a', 'span', 'input'
+    ],
+    ALLOWED_ATTR: ['href', 'title', 'rel', 'class', 'type', 'checked', 'disabled'],
+  }) as HTMLElement;
+  safeDOM.querySelectorAll('input').forEach((input) => {
+    input.type = 'checkbox';
+    input.disabled = true;
+  });
+  return safeDOM.innerHTML;
 });
 
 function formatTime(isoStr: string): string {

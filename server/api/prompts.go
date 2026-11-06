@@ -83,7 +83,7 @@ func (h *PromptsHandler) TestPrompt(c *gin.Context) {
 	}
 
 	now := time.Now().In(h.cfg.Location)
-	systemPrompt, userPrompt, err := h.promptMgr.RenderPrompt(req.RawContent, now, userTagNames)
+	payload, err := h.promptMgr.BuildPayload(req.RawContent, now, userTagNames)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "RENDER_ERROR", "message": err.Error()}})
 		return
@@ -92,15 +92,17 @@ func (h *PromptsHandler) TestPrompt(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.cfg.AI.TimeoutSeconds)*time.Second)
 	defer cancel()
 
-	result, err := h.llmClient.ProcessNote(ctx, systemPrompt, userPrompt, req.RawContent)
+	result, err := h.llmClient.ProcessNote(ctx, payload)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "AI_ERROR", "message": err.Error()}})
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"code": "AI_ERROR", "message": "AI 处理失败，请检查服务配置或响应格式"}})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"system_prompt": systemPrompt,
-		"user_prompt":   userPrompt,
+		"system_prompt": payload.SystemPrompt,
+		"user_prompt":   payload.UserPrompt,
+		"temperature":   payload.Temperature,
+		"max_tokens":    payload.MaxTokens,
 		"result":        result,
 	})
 }

@@ -94,6 +94,7 @@ func main() {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
+	r.Use(func(c *gin.Context) { c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20); c.Next() })
 
 	// CORS 中间件（满足浏览器 Vite 调试及 Android WebView 跨域请求）
 	r.Use(func(c *gin.Context) {
@@ -119,7 +120,7 @@ func main() {
 	systemHandler := api.NewSystemHandler(cfg, accountStore, mdStore, indexMgr)
 
 	// 启动后台自愈检查（索引完整性校验与未决 AI 任务重试）
-	go runStartupRecovery(cfg, accountStore, mdStore, indexMgr, notesHandler)
+	runStartupRecovery(cfg, accountStore, mdStore, indexMgr, notesHandler)
 
 	// API 路由组
 	apiV1 := r.Group("/api/v1")
@@ -261,14 +262,8 @@ func runStartupRecovery(cfg *config.Config, accountStore *storage.AccountStore, 
 			continue
 		}
 
-		count, err := idx.GetTotalCount()
-		needRebuild := false
-		if err != nil || (len(notes) > 0 && count == 0) {
-			needRebuild = true
-		}
-
-		if needRebuild {
-			log.Printf("[启动自愈] 用户 %s 索引缺失或为空 (笔记数: %d, 索引数: %d)，开始全量重建...", u.Email, len(notes), count)
+		// 个人规模：启动前按权威文件重建，包括非空索引的外部修改／删除。
+		{
 			if err := idx.RebuildIndex(notes, cfg.Location); err != nil {
 				log.Printf("[启动自愈] 用户 %s 索引重建失败: %v", u.Email, err)
 			} else {
@@ -281,7 +276,16 @@ func runStartupRecovery(cfg *config.Config, accountStore *storage.AccountStore, 
 			if note.ProcessingStatus == "processing" {
 				log.Printf("[启动自愈] 发现用户 %s 的未完成任务 %s，重新发起异步处理...", u.Email, note.ID)
 				recoveredTasks++
-				go notesHandler.ProcessNoteAsync(u.Email, note.ID)
+				newTaskID := storage.GenerateTaskID()
+				_, recoveryErr := mdStore.MutateNoteAtomic(u.Email, note.ID, func(n *storage.Note) error {
+					n.CurrentTaskID = newTaskID
+					return nil
+				}, cfg.Location)
+				if recoveryErr != nil {
+					log.Printf("[启动自愈] 任务恢复失败 %s", note.ID)
+					continue
+				}
+				go notesHandler.ProcessNoteAsync(u.Email, note.ID, newTaskID)
 			}
 		}
 	}

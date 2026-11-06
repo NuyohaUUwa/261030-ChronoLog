@@ -29,13 +29,14 @@ func setupTestServer(t *testing.T) (*gin.Engine, *config.Config, func()) {
 
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	cfg := &config.Config{
-		Server: config.ServerConfig{Address: "127.0.0.1:8080"},
+		Server:  config.ServerConfig{Address: "127.0.0.1:8080"},
 		Storage: config.StorageConfig{DataDir: tempDir},
-		App: config.AppConfig{Timezone: "Asia/Shanghai"},
+		App:     config.AppConfig{Timezone: "Asia/Shanghai"},
 		Auth: config.AuthConfig{
 			JWTSecret:        "test-secret-key-32-chars-length!",
 			TokenExpiryHours: 24,
 			AdminEmails:      []string{"admin@test.local"},
+			AdminSetupKey:    "test-admin-setup-key",
 		},
 		AI: config.AIConfig{
 			Mode:           "mock",
@@ -111,6 +112,7 @@ constraints: ""
 	}
 
 	cleanup := func() {
+		indexMgr.Close()
 		accountStore.Close()
 		os.RemoveAll(tempDir)
 	}
@@ -207,16 +209,29 @@ func TestAPI_AuthAndNoteWorkflow(t *testing.T) {
 		t.Fatalf("跨用户读笔记应当隔离并返回 404 Not Found, 实际返回: %d", w.Code)
 	}
 
-	// 6. 管理员注册登录与权限验证
-	regAdminBody, _ := json.Marshal(map[string]string{
+	// 6. 管理员注册安全校验：无 key 注册管理员邮箱被 403 拒绝
+	regAdminWithoutKey, _ := json.Marshal(map[string]string{
 		"email":    "admin@test.local",
 		"password": "adminpassword",
+	})
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regAdminWithoutKey))
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("无 Admin Key 注册管理员邮箱应被 403 拦截, 实际: %d", w.Code)
+	}
+
+	// 携带正确 Admin Key 注册管理员成功
+	regAdminBody, _ := json.Marshal(map[string]string{
+		"email":     "admin@test.local",
+		"password":  "adminpassword",
+		"admin_key": "test-admin-setup-key",
 	})
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regAdminBody))
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("注册管理员失败: %d", w.Code)
+		t.Fatalf("注册管理员失败: %d %s", w.Code, w.Body.String())
 	}
 	var adminResp AuthResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &adminResp)
@@ -368,8 +383,9 @@ func TestAPI_RebuildIndexEndpoint(t *testing.T) {
 
 	// 注册普通用户与管理员
 	regAdminBody, _ := json.Marshal(map[string]string{
-		"email":    "admin@test.local",
-		"password": "adminpassword",
+		"email":     "admin@test.local",
+		"password":  "adminpassword",
+		"admin_key": "test-admin-setup-key",
 	})
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regAdminBody))

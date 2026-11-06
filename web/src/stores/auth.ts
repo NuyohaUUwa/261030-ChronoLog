@@ -15,10 +15,10 @@ export const useAuthStore = defineStore('auth', {
     isAuthenticated: (state) => !!state.token,
   },
   actions: {
-    async register(email: string, password: string) {
+    async register(email: string, password: string, adminKey?: string) {
       this.loading = true;
       try {
-        const res = await api.register(email, password);
+        const res = await api.register(email, password, adminKey);
         this.setAuthData(res.data);
         return res.data;
       } finally {

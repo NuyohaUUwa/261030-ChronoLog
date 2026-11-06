@@ -21,6 +21,12 @@ chronolog-*
 *.log
 *.tsbuildinfo
 
+# Review reports and audit artifacts
+/reviews/
+/docs/reviews/
+*Review*.md
+*review*.md
+
 # Runtime data and backups (never blanket-ignore Markdown notes)
 /data/
 /data-dev/

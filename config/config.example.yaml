@@ -10,6 +10,7 @@ app:
 auth:
   jwt_secret: "" # 启动必填，本地开发在 config.local.yaml 中生成并填写安全随机值
   token_expiry_hours: 720 # Token 有效期（小时）
+  admin_setup_key: "" # 管理员首次注册必填；环境变量 ADMIN_SETUP_KEY 覆盖，真实值不得提交
   admin_emails:
     - "434322037@qq.com" # 具备管理提示词配置权限的管理员邮箱列表
 

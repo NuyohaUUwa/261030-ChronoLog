@@ -70,8 +70,8 @@ apiClient.interceptors.response.use(
 
 export default {
   // 认证
-  register(email: string, password: string) {
-    return apiClient.post('/auth/register', { email, password });
+  register(email: string, password: string, adminKey?: string) {
+    return apiClient.post('/auth/register', { email, password, admin_key: adminKey || undefined });
   },
   login(email: string, password: string) {
     return apiClient.post('/auth/login', { email, password });

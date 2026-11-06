@@ -13,11 +13,18 @@ export const useNotesStore = defineStore('notes', {
     searchKeyword: '',
     loading: false,
     errorMessage: '',
+  lastFailedMore: false,
+  requestId: 0,
     selectedNote: null as Note | null,
     pollingMap: {} as Record<string, number>, // noteID -> timer ID
   }),
   actions: {
-    async fetchNotes() {
+    async fetchNotes(resetPage = true) {
+    const requestId = ++this.requestId;
+    this.lastFailedMore = false;
+      if (resetPage) {
+        this.page = 1;
+      }
       this.loading = true;
       this.errorMessage = '';
       try {
@@ -28,6 +35,7 @@ export const useNotesStore = defineStore('notes', {
           page: this.page,
           limit: this.limit,
         });
+    if (requestId !== this.requestId) return;
         this.notes = res.data.items || [];
         this.total = res.data.total || 0;
 
@@ -38,35 +46,47 @@ export const useNotesStore = defineStore('notes', {
           }
         }
       } catch (err: any) {
+    if (requestId !== this.requestId) return;
         console.error('获取笔记列表失败:', err);
         this.errorMessage = err.response?.data?.error?.message || err.message || '加载笔记列表失败，请检查网络或后端服务';
       } finally {
-        this.loading = false;
+        if (requestId === this.requestId) this.loading = false;
       }
     },
 
     async loadMore() {
       if (this.loading || this.notes.length >= this.total) return;
-      this.page++;
+      const targetPage = this.page + 1;
+    const requestId = ++this.requestId;
+    this.errorMessage = '';
+    this.lastFailedMore = false;
       this.loading = true;
       try {
         const res = await api.listNotes({
           date: this.selectedDate || undefined,
           tag: this.selectedTag || undefined,
           keyword: this.searchKeyword || undefined,
-          page: this.page,
+          page: targetPage,
           limit: this.limit,
         });
+    if (requestId !== this.requestId) return;
         const items = res.data.items || [];
-        this.notes.push(...items);
+    const ids = new Set(this.notes.map(n => n.id));
+        this.notes.push(...items.filter(n => !ids.has(n.id)));
+    for (const n of items) if (n.processing_status === 'processing') this.startPollingNote(n.id);
         this.total = res.data.total || 0;
+        this.page = targetPage;
       } catch (err: any) {
+    if (requestId !== this.requestId) return;
+    this.lastFailedMore = true;
         console.error('加载更多失败:', err);
         this.errorMessage = err.response?.data?.error?.message || err.message || '加载更多笔记失败';
       } finally {
-        this.loading = false;
+        if (requestId === this.requestId) this.loading = false;
       }
     },
+
+  retryFetch() { return this.lastFailedMore ? this.loadMore() : this.fetchNotes(); },
 
     async createNote(rawContent: string) {
       const res = await api.createNote(rawContent);

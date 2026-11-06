@@ -22,3 +22,6 @@ backups
 *.local.json
 .vscode
 .idea
+
+reviews
+docs/reviews

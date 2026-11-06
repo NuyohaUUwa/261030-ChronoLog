@@ -82,7 +82,7 @@ func (h *NotesHandler) CreateNote(c *gin.Context) {
 	}
 
 	// 3. 异步启动 AI 处理流水线
-	go h.ProcessNoteAsync(email, note.ID)
+	go h.ProcessNoteAsync(email, note.ID, note.CurrentTaskID)
 
 	// 4. 返回 HTTP 202 Accepted
 	c.JSON(http.StatusAccepted, gin.H{
@@ -91,15 +91,19 @@ func (h *NotesHandler) CreateNote(c *gin.Context) {
 	})
 }
 
-// ProcessNoteAsync 执行异步 AI 润色与结构化抽取流水线（防并发覆盖）
-func (h *NotesHandler) ProcessNoteAsync(email, noteID string) {
+// ProcessNoteAsync 执行异步 AI 润色与结构化抽取流水线（防并发覆盖与旧任务竞态）
+func (h *NotesHandler) ProcessNoteAsync(email, noteID, taskID string) {
 	note, err := h.mdStore.ReadNote(email, noteID)
 	if err != nil {
 		log.Printf("[AI 流水线] 读取笔记失败 %s: %v", noteID, err)
 		return
 	}
 
-	initialRawContent := note.RawContent
+	if taskID != "" && note.CurrentTaskID != "" && note.CurrentTaskID != taskID {
+		log.Printf("[AI 流水线] 任务 %s 已被新任务替代，放弃处理", taskID)
+		return
+	}
+
 	initialRevision := note.Revision
 
 	// 提取用户现有常用标签以作为上下文 Few-Shot 参考
@@ -117,50 +121,50 @@ func (h *NotesHandler) ProcessNoteAsync(email, noteID string) {
 		refTime = time.Now().In(h.cfg.Location)
 	}
 
-	systemPrompt, userPrompt, err := h.promptMgr.RenderPrompt(note.RawContent, refTime, userTagNames)
+	payload, err := h.promptMgr.BuildPayload(note.RawContent, refTime, userTagNames)
 	if err != nil {
 		log.Printf("[AI 流水线] 渲染提示词失败 %s: %v", noteID, err)
-		h.markNoteFailed(email, noteID, "渲染提示词失败: "+err.Error())
+		h.markNoteFailed(email, noteID, taskID, "渲染提示词失败")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.cfg.AI.TimeoutSeconds)*time.Second)
 	defer cancel()
 
-	result, err := h.llmClient.ProcessNote(ctx, systemPrompt, userPrompt, note.RawContent)
+	result, err := h.llmClient.ProcessNote(ctx, payload)
 	if err != nil {
-		log.Printf("[AI 流水线] 大模型调用失败 %s: %v", noteID, err)
-		h.markNoteFailed(email, noteID, "大模型处理失败: "+err.Error())
+		log.Printf("[AI 流水线] 大模型调用失败 %s (内部错误已脱敏)", noteID)
+		safeReason := "大模型服务处理失败，请稍后重试"
+		if strings.Contains(err.Error(), "context deadline exceeded") {
+			safeReason = "大模型调用超时，请稍后重试"
+		} else if strings.Contains(err.Error(), "合法 JSON") || strings.Contains(err.Error(), "响应缺少") || strings.Contains(err.Error(), "空响应") {
+			safeReason = "大模型响应格式解析异常，请稍后重试"
+		}
+		h.markNoteFailed(email, noteID, taskID, safeReason)
 		return
 	}
 
-	// 使用独占锁 MutateNoteAtomic 进行原子写回，核对版本防并发覆盖
+	// 使用独占锁 MutateNoteAtomic 进行原子写回，核对任务与版本防并发覆盖
 	updatedNote, err := h.mdStore.MutateNoteAtomic(email, noteID, func(currentNote *storage.Note) error {
+		// 校验任务 ID：若已被用户发起的重试等新任务替代，直接放弃写回
+		if taskID != "" && currentNote.CurrentTaskID != taskID {
+			return errors.New("任务已被新任务替代")
+		}
+
 		currentNote.ProcessingStatus = "ready"
 		currentNote.FailureReason = ""
 
-		// 如果用户在处理期间没有修改正文（或者当前正文为空/等于初始），才用 AI 润色回填
-		if currentNote.Revision == initialRevision || currentNote.RawContent == initialRawContent {
-			if currentNote.PolishedContent == "" {
-				currentNote.PolishedContent = result.PolishedContent
-			}
-			if len(currentNote.Tags) == 0 {
-				currentNote.Tags = result.Tags
-			}
-			if len(currentNote.Reminders) == 0 {
-				currentNote.Reminders = result.Reminders
-			}
-		} else {
-			// 用户在处理期间产生了新编辑，保留用户当前编辑，仅在未设置时补充 AI 抽取项
-			if currentNote.PolishedContent == "" {
-				currentNote.PolishedContent = result.PolishedContent
-			}
+		// 如果用户在处理期间从未手动编辑（未修改正文、未调整/清空标签与待办）
+		if !currentNote.UserEdited && currentNote.Revision == initialRevision {
+			currentNote.PolishedContent = result.PolishedContent
+			currentNote.Tags = result.Tags
+			currentNote.Reminders = result.Reminders
 		}
 		return nil
 	}, h.cfg.Location)
 
 	if err != nil {
-		log.Printf("[AI 流水线] 原子写入笔记失败 %s: %v", noteID, err)
+		log.Printf("[AI 流水线] 原子写入笔记跳过/失败 %s: %v", noteID, err)
 		return
 	}
 
@@ -169,8 +173,11 @@ func (h *NotesHandler) ProcessNoteAsync(email, noteID string) {
 	}
 }
 
-func (h *NotesHandler) markNoteFailed(email, noteID, reason string) {
+func (h *NotesHandler) markNoteFailed(email, noteID, taskID, reason string) {
 	updatedNote, err := h.mdStore.MutateNoteAtomic(email, noteID, func(currentNote *storage.Note) error {
+		if taskID != "" && currentNote.CurrentTaskID != taskID {
+			return errors.New("任务已被新任务替代")
+		}
 		currentNote.ProcessingStatus = "failed"
 		currentNote.FailureReason = reason
 		return nil
@@ -261,6 +268,7 @@ func (h *NotesHandler) UpdateNote(c *gin.Context) {
 			return storage.ErrRevisionConflict
 		}
 
+		note.UserEdited = true
 		if req.PolishedContent != nil {
 			note.PolishedContent = *req.PolishedContent
 		}
@@ -329,13 +337,22 @@ func (h *NotesHandler) RetryNoteAI(c *gin.Context) {
 		return
 	}
 
+	newTaskID := storage.GenerateTaskID()
 	updatedNote, err := h.mdStore.MutateNoteAtomic(email, noteID, func(note *storage.Note) error {
+		if note.ProcessingStatus == "processing" {
+			return errors.New("任务已在处理中")
+		}
 		note.ProcessingStatus = "processing"
 		note.FailureReason = ""
+		note.CurrentTaskID = newTaskID
 		return nil
 	}, h.cfg.Location)
 
 	if err != nil {
+		if err.Error() == "任务已在处理中" {
+			c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "TASK_RUNNING", "message": "该笔记已在处理中，请稍候"}})
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
 		return
 	}
@@ -344,7 +361,7 @@ func (h *NotesHandler) RetryNoteAI(c *gin.Context) {
 		_ = idx.IndexNote(updatedNote, h.cfg.Location)
 	}
 
-	go h.ProcessNoteAsync(email, noteID)
+	go h.ProcessNoteAsync(email, noteID, newTaskID)
 
 	c.JSON(http.StatusAccepted, gin.H{
 		"id":     noteID,
@@ -377,6 +394,7 @@ func (h *NotesHandler) CompleteReminder(c *gin.Context) {
 			return errors.New("REMINDER_NOT_FOUND")
 		}
 		updatedReminders = note.Reminders
+		note.UserEdited = true
 		return nil
 	}, h.cfg.Location)
 

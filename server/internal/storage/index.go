@@ -14,11 +14,11 @@ import (
 )
 
 type NoteFilter struct {
-	Date     string // YYYY-MM-DD
-	Tag      string
-	Keyword  string
-	Page     int
-	Limit    int
+	Date    string // YYYY-MM-DD
+	Tag     string
+	Keyword string
+	Page    int
+	Limit   int
 }
 
 type CalendarReminderDate struct {
@@ -44,6 +44,7 @@ type UserIndex struct {
 }
 
 type IndexManager struct {
+	mu          sync.Mutex
 	baseDataDir string
 	userIndices sync.Map // email -> *UserIndex
 }
@@ -54,8 +55,16 @@ func NewIndexManager(baseDataDir string) *IndexManager {
 	}
 }
 
+func (m *IndexManager) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.userIndices.Range(func(key, value any) bool { _ = value.(*UserIndex).db.Close(); m.userIndices.Delete(key); return true })
+}
+
 // GetUserIndex 获取指定用户的 index.db 实例
 func (m *IndexManager) GetUserIndex(email string) (*UserIndex, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	safeEmail, err := SanitizeEmail(email)
 	if err != nil {
 		return nil, err
@@ -98,6 +107,7 @@ func (m *IndexManager) GetUserIndex(email string) (*UserIndex, error) {
 
 	CREATE INDEX IF NOT EXISTS idx_notes_date ON notes_meta(date_str);
 	CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes_meta(created_at DESC);
+	CREATE TABLE IF NOT EXISTS reminder_dates (note_id TEXT NOT NULL, date_str TEXT NOT NULL, PRIMARY KEY(note_id, date_str));
 
 	CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
 		id UNINDEXED,
@@ -142,12 +152,17 @@ func (u *UserIndex) IndexNote(note *Note, loc *time.Location) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := indexReminderDates(tx, note, loc); err != nil {
+		return err
+	}
 
 	// 插入或更新元数据
 	metaStmt := `
 	INSERT INTO notes_meta (id, created_at, date_str, updated_at, processing_status, failure_reason, raw_content, polished_content, tags_json, reminders_json)
 	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
+		created_at = excluded.created_at,
+		date_str = excluded.date_str,
 		updated_at = excluded.updated_at,
 		processing_status = excluded.processing_status,
 		failure_reason = excluded.failure_reason,
@@ -181,6 +196,9 @@ func (u *UserIndex) DeleteNoteIndex(noteID string) error {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM reminder_dates WHERE note_id = ?`, noteID); err != nil {
+		return err
+	}
 
 	if _, err := tx.Exec(`DELETE FROM notes_meta WHERE id = ?`, noteID); err != nil {
 		return err
@@ -212,8 +230,9 @@ func (u *UserIndex) QueryNotes(filter NoteFilter) ([]*Note, int, error) {
 	var args []interface{}
 
 	if filter.Date != "" {
-		conditions = append(conditions, "m.date_str = ?")
-		args = append(args, filter.Date)
+		// 匹配笔记创建日期 OR 笔记中提醒的触发日期 (双模日历双向聚合)
+		conditions = append(conditions, "(m.date_str = ? OR EXISTS (SELECT 1 FROM reminder_dates d WHERE d.note_id = m.id AND d.date_str = ?))")
+		args = append(args, filter.Date, filter.Date)
 	}
 
 	if filter.Tag != "" {
@@ -414,6 +433,9 @@ func (u *UserIndex) RebuildIndex(notes []*Note, loc *time.Location) error {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM reminder_dates`); err != nil {
+		return err
+	}
 
 	if _, err := tx.Exec(`DELETE FROM notes_meta`); err != nil {
 		return err
@@ -423,6 +445,9 @@ func (u *UserIndex) RebuildIndex(notes []*Note, loc *time.Location) error {
 	}
 
 	for _, note := range notes {
+		if err := indexReminderDates(tx, note, loc); err != nil {
+			return err
+		}
 		parsedTime, err := time.Parse(time.RFC3339, note.CreatedAt)
 		dateStr := ""
 		if err == nil {
@@ -449,6 +474,22 @@ func (u *UserIndex) RebuildIndex(notes []*Note, loc *time.Location) error {
 	}
 
 	return tx.Commit()
+}
+
+func indexReminderDates(tx *sql.Tx, note *Note, loc *time.Location) error {
+	if _, err := tx.Exec(`DELETE FROM reminder_dates WHERE note_id = ?`, note.ID); err != nil {
+		return err
+	}
+	for _, r := range note.Reminders {
+		t, err := time.Parse(time.RFC3339, r.RemindAt)
+		if err != nil {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO reminder_dates(note_id, date_str) VALUES (?, ?)`, note.ID, t.In(loc).Format("2006-01-02")); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetTotalCount 查询当前索引库中记录的总数

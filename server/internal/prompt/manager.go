@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"chronolog/server/internal/llm"
 )
 
 type ModelSettings struct {
@@ -18,15 +21,15 @@ type ModelSettings struct {
 }
 
 type ReminderExample struct {
-	Title    string `yaml:"title"`
-	RemindAt string `yaml:"remind_at"`
-	Reason   string `yaml:"reason"`
+	Title    string `yaml:"title" json:"title"`
+	RemindAt string `yaml:"remind_at" json:"remind_at"`
+	Reason   string `yaml:"reason" json:"reason"`
 }
 
 type ExampleOutput struct {
-	PolishedContent string            `yaml:"polished_content"`
-	Tags            []string          `yaml:"tags"`
-	Reminders       []ReminderExample `yaml:"reminders"`
+	PolishedContent string            `yaml:"polished_content" json:"polished_content"`
+	Tags            []string          `yaml:"tags" json:"tags"`
+	Reminders       []ReminderExample `yaml:"reminders" json:"reminders"`
 }
 
 type FewShotExample struct {
@@ -68,11 +71,14 @@ func (p *PromptManager) Reload() error {
 		return fmt.Errorf("读取提示词文件失败: %w", err)
 	}
 
-	var cfg PromptConfig
+	cfg := PromptConfig{ModelSettings: ModelSettings{Temperature: 0.2, MaxTokens: 1500}}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("解析提示词 YAML 失败: %w", err)
 	}
 
+	if err := validatePrompt(&cfg); err != nil {
+		return err
+	}
 	p.cfg = &cfg
 	return nil
 }
@@ -92,14 +98,14 @@ func (p *PromptManager) GetRawYAML() (string, error) {
 // UpdateRawYAML 校验并原子写入新的提示词 YAML
 func (p *PromptManager) UpdateRawYAML(content string) error {
 	// 先做反序列化校验
-	var cfg PromptConfig
+	cfg := PromptConfig{ModelSettings: ModelSettings{Temperature: 0.2, MaxTokens: 1500}}
 	if err := yaml.Unmarshal([]byte(content), &cfg); err != nil {
 		return fmt.Errorf("提示词 YAML 格式不合法: %w", err)
 	}
 
 	// 校验必要字段
-	if strings.TrimSpace(cfg.SystemPrompt) == "" {
-		return fmt.Errorf("system_prompt 不能为空")
+	if err := validatePrompt(&cfg); err != nil {
+		return err
 	}
 
 	p.mu.Lock()
@@ -117,6 +123,16 @@ func (p *PromptManager) UpdateRawYAML(content string) error {
 	}
 
 	p.cfg = &cfg
+	return nil
+}
+
+func validatePrompt(cfg *PromptConfig) error {
+	if strings.TrimSpace(cfg.SystemPrompt) == "" || !strings.Contains(cfg.DynamicContextTemplate, "{{RAW_CONTENT}}") {
+		return fmt.Errorf("提示词必须包含 system_prompt 和原稿占位符")
+	}
+	if cfg.ModelSettings.Temperature < 0 || cfg.ModelSettings.Temperature > 2 || cfg.ModelSettings.MaxTokens < 1 || cfg.ModelSettings.MaxTokens > 16000 {
+		return fmt.Errorf("模型参数范围错误")
+	}
 	return nil
 }
 
@@ -154,4 +170,76 @@ func (p *PromptManager) RenderPrompt(rawContent string, refTime time.Time, userT
 	}
 
 	return p.cfg.SystemPrompt, userBuf.String(), nil
+}
+
+// BuildPayload 构建包含完整模型参数、Few-Shot 消息序列与渲染后上下文的 Payload
+func (p *PromptManager) BuildPayload(rawContent string, refTime time.Time, userTags []string) (*llm.PromptPayload, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.cfg == nil {
+		return nil, fmt.Errorf("提示词配置未初始化")
+	}
+
+	weekdays := []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
+	weekdayStr := weekdays[refTime.Weekday()]
+
+	// 渲染动态上下文
+	contextText := p.cfg.DynamicContextTemplate
+	contextText = strings.ReplaceAll(contextText, "{{CURRENT_DATETIME}}", refTime.Format(time.RFC3339))
+	contextText = strings.ReplaceAll(contextText, "{{CURRENT_WEEKDAY}}", weekdayStr)
+
+	tagsStr := "暂无"
+	if len(userTags) > 0 {
+		tagsStr = strings.Join(userTags, ", ")
+	}
+	contextText = strings.ReplaceAll(contextText, "{{USER_TAGS}}", tagsStr)
+	contextText = strings.ReplaceAll(contextText, "{{RAW_CONTENT}}", rawContent)
+
+	var userBuf bytes.Buffer
+	userBuf.WriteString(contextText)
+	userBuf.WriteString("\n\n")
+
+	if strings.TrimSpace(p.cfg.Constraints) != "" {
+		userBuf.WriteString(p.cfg.Constraints)
+		userBuf.WriteString("\n")
+	}
+
+	// 构造 FewShot 消息对 (Role: user / assistant)
+	var fewShotMessages []llm.ChatMessage
+	for _, eg := range p.cfg.FewShotExamples {
+		if strings.TrimSpace(eg.Input) == "" {
+			continue
+		}
+		egUserText := eg.Input
+		if eg.ReferenceTime != "" {
+			egUserText = fmt.Sprintf("【参考时间】：%s\n【随手记输入】：\n\"\"\"\n%s\n\"\"\"", eg.ReferenceTime, eg.Input)
+		}
+		outJSON, err := json.Marshal(eg.Output)
+		if err != nil {
+			continue
+		}
+		fewShotMessages = append(fewShotMessages,
+			llm.ChatMessage{Role: "user", Content: egUserText},
+			llm.ChatMessage{Role: "assistant", Content: string(outJSON)},
+		)
+	}
+
+	temp := p.cfg.ModelSettings.Temperature
+	if temp < 0 || temp > 2 {
+		temp = 0.2
+	}
+	maxTokens := p.cfg.ModelSettings.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 1500
+	}
+
+	return &llm.PromptPayload{
+		SystemPrompt:    p.cfg.SystemPrompt,
+		UserPrompt:      userBuf.String(),
+		RawContent:      rawContent,
+		FewShotMessages: fewShotMessages,
+		Temperature:     temp,
+		MaxTokens:       maxTokens,
+	}, nil
 }

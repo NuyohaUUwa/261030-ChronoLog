@@ -61,8 +61,8 @@
 
       <!-- 用户信息与登出 -->
       <div class="flex items-center space-x-3">
-        <div class="hidden sm:flex items-center space-x-2 text-xs">
-          <span class="text-slate-500 font-mono">{{ authStore.email }}</span>
+        <div class="flex flex-col sm:flex-row items-end sm:items-center gap-1 text-xs">
+          <span class="hidden sm:block text-slate-500 font-mono">{{ authStore.email }}</span>
           <span v-if="authStore.isAdmin" class="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 font-medium">管理员</span>
           <span
             :class="authStore.aiMode === 'remote' ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'"
@@ -71,6 +71,7 @@
           >
             {{ authStore.aiMode === 'remote' ? 'AI: Remote' : 'AI: Mock' }}
           </span>
+          <span class="text-[10px] text-slate-500">通知: {{ authStore.notificationsMode === 'mock' ? '模拟' : '远程' }}</span>
         </div>
         <button
           @click="authStore.logout"

@@ -23,7 +23,7 @@
       </div>
 
       <p class="text-xs text-slate-500 leading-relaxed">
-        系统检测到待办提醒到期后，将向 Ntfy 专属频道发送轻量通知。您可以在手机上安装 Ntfy App 并订阅此频道以接收实时弹窗提醒。
+        {{ authStore.notificationsMode === 'mock' ? '当前为模拟通知，不会向手机发送消息。' : '当前使用远程通知渠道，消息送达取决于服务器配置及手机订阅。' }}
       </p>
 
       <div class="space-y-3">
@@ -46,8 +46,8 @@
         </div>
 
         <div class="p-3 bg-slate-50 rounded-xl text-[11px] text-slate-500 space-y-1">
-          <div>推送端点: <code class="font-mono text-brand-600">https://ntfy.sh/{{ ntfyTopic }}</code></div>
-          <div>点击通知直接跳转查看足迹笔记详情。</div>
+          <div>订阅主题: <code class="font-mono text-brand-600">{{ ntfyTopic }}</code></div>
+          <div>通知服务地址由服务器配置；通知点击定位笔记功能尚未实现。</div>
         </div>
       </div>
     </div>

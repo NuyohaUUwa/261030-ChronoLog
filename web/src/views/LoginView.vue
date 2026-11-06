@@ -59,6 +59,19 @@
           </div>
         </div>
 
+        <div v-if="isRegister">
+          <label class="block text-xs font-medium text-slate-600 mb-1">管理员初始化密钥 (普通用户免填)</label>
+          <div class="relative">
+            <input
+              v-model="adminKey"
+              type="password"
+              placeholder="普通用户留空；管理员请输入部署密钥"
+              class="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 outline-none transition-all"
+            />
+            <ShieldCheck class="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+          </div>
+        </div>
+
         <div v-if="errorMsg" class="p-3 rounded-xl bg-red-50 text-red-600 text-xs flex items-center space-x-2 border border-red-200/60">
           <AlertCircle class="w-4 h-4 shrink-0" />
           <span>{{ errorMsg }}</span>
@@ -84,7 +97,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { Clock, Mail, Lock, AlertCircle, ArrowRight } from 'lucide-vue-next';
+import { Clock, Mail, Lock, AlertCircle, ArrowRight, ShieldCheck } from 'lucide-vue-next';
 import { useAuthStore } from '../stores/auth';
 
 const router = useRouter();
@@ -93,13 +106,14 @@ const authStore = useAuthStore();
 const isRegister = ref(false);
 const email = ref('');
 const password = ref('');
+const adminKey = ref('');
 const errorMsg = ref('');
 
 async function handleSubmit() {
   errorMsg.value = '';
   try {
     if (isRegister.value) {
-      await authStore.register(email.value, password.value);
+      await authStore.register(email.value, password.value, adminKey.value);
     } else {
       await authStore.login(email.value, password.value);
     }

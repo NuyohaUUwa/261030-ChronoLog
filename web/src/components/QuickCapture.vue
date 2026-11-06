@@ -11,7 +11,7 @@
       ></textarea>
     </div>
 
-    <div class="mt-3 flex items-center justify-between">
+    <div class="mt-3 flex items-center justify-between gap-3">
       <span class="text-[11px] text-slate-400">
         💡 提交后毫秒级落盘原稿，AI 异步抽取结构化标签与待办
       </span>
@@ -19,7 +19,7 @@
       <button
         @click="handleSubmit"
         :disabled="submitting || !content.trim()"
-        class="px-4 py-2 rounded-xl text-sm font-medium bg-brand-600 hover:bg-brand-700 disabled:opacity-40 disabled:hover:bg-brand-600 text-white flex items-center space-x-1.5 shadow-sm transition-all"
+        class="shrink-0 whitespace-nowrap px-4 py-2 rounded-xl text-sm font-medium bg-brand-600 hover:bg-brand-700 disabled:opacity-40 disabled:hover:bg-brand-600 text-white flex items-center space-x-1.5 shadow-sm transition-all"
       >
         <Send class="w-3.5 h-3.5" :class="{ 'animate-pulse': submitting }" />
         <span>{{ submitting ? '保存中...' : '快速记下' }}</span>

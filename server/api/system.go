@@ -4,9 +4,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
 	"chronolog/server/internal/config"
 	"chronolog/server/internal/storage"
+	"github.com/gin-gonic/gin"
 )
 
 type SystemHandler struct {

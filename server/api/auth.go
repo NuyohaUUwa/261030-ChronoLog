@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -32,6 +33,7 @@ func NewAuthHandler(cfg *config.Config, accountStore *storage.AccountStore) *Aut
 type AuthRequest struct {
 	Email    string `json:"email" binding:"required"`
 	Password string `json:"password" binding:"required"`
+	AdminKey string `json:"admin_key,omitempty"`
 }
 
 type AuthResponse struct {
@@ -61,6 +63,21 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	if !emailRegex.MatchString(email) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "INVALID_EMAIL", "message": "邮箱格式不正确"}})
 		return
+	}
+
+	// 针对管理员候选邮箱增加初始化密钥校验，防止公开注册抢注管理员
+	isAdminCandidate := h.cfg.IsAdmin(email)
+	if isAdminCandidate {
+		expectedKey := strings.TrimSpace(h.cfg.Auth.AdminSetupKey)
+		if expectedKey == "" || subtle.ConstantTimeCompare([]byte(strings.TrimSpace(req.AdminKey)), []byte(expectedKey)) != 1 {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": gin.H{
+					"code":    "ADMIN_KEY_REQUIRED",
+					"message": "该邮箱属于系统管理员名单，注册时必须提供有效的管理员初始化密钥",
+				},
+			})
+			return
+		}
 	}
 
 	if len(req.Password) < 6 {

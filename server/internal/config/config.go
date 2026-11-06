@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,6 +41,7 @@ type AuthConfig struct {
 	JWTSecret        string   `yaml:"jwt_secret"`
 	TokenExpiryHours int      `yaml:"token_expiry_hours"`
 	AdminEmails      []string `yaml:"admin_emails"`
+	AdminSetupKey    string   `yaml:"admin_setup_key"`
 }
 
 type AIConfig struct {
@@ -136,6 +138,9 @@ func LoadConfig() (*Config, error) {
 	if val := os.Getenv("ADMIN_EMAILS"); val != "" {
 		cfg.Auth.AdminEmails = parseCommaSeparated(val)
 	}
+	if val := os.Getenv("ADMIN_SETUP_KEY"); val != "" {
+		cfg.Auth.AdminSetupKey = strings.TrimSpace(val)
+	}
 	if val := os.Getenv("AI_MODE"); val != "" {
 		cfg.AI.Mode = strings.ToLower(val)
 	}
@@ -164,6 +169,26 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// 时区加载
+	cfg.AI.Mode = strings.ToLower(strings.TrimSpace(cfg.AI.Mode))
+	cfg.Notifications.Mode = strings.ToLower(strings.TrimSpace(cfg.Notifications.Mode))
+	if cfg.AI.Mode != "mock" && cfg.AI.Mode != "remote" {
+		return nil, fmt.Errorf("AI_MODE 必须是 mock 或 remote")
+	}
+	if cfg.Notifications.Mode != "mock" && cfg.Notifications.Mode != "remote" {
+		return nil, fmt.Errorf("NOTIFICATION_MODE 必须是 mock 或 remote")
+	}
+	if cfg.AI.TimeoutSeconds <= 0 {
+		return nil, fmt.Errorf("AI 超时必须大于零")
+	}
+	if cfg.AI.Mode == "remote" {
+		u, parseErr := url.Parse(cfg.AI.BaseURL)
+		if parseErr != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return nil, fmt.Errorf("AI 地址必须为无凭据及查询参数的 HTTP(S) 地址")
+		}
+		if strings.TrimSpace(cfg.AI.Model) == "" {
+			return nil, fmt.Errorf("remote 模式必须配置 AI_MODEL")
+		}
+	}
 	loc, err := time.LoadLocation(cfg.App.Timezone)
 	if err != nil {
 		return nil, fmt.Errorf("无效的时区配置 (%s): %w", cfg.App.Timezone, err)

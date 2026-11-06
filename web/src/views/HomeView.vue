@@ -60,21 +60,38 @@
           </button>
         </div>
 
+        <!-- 加载失败但已有卡片时的浮动警告条 -->
+        <div
+          v-if="notesStore.errorMessage && notesStore.notes.length > 0"
+          class="bg-amber-50 border border-amber-200/80 rounded-xl px-4 py-2.5 flex items-center justify-between text-xs text-amber-800"
+        >
+          <div class="flex items-center space-x-2">
+            <AlertTriangle class="w-4 h-4 text-amber-500 shrink-0" />
+            <span>{{ notesStore.errorMessage }}</span>
+          </div>
+          <button
+            @click="notesStore.retryFetch()"
+            class="text-amber-700 underline font-medium hover:text-amber-900"
+          >
+            重试加载
+          </button>
+        </div>
+
         <!-- 结构化卡片流 -->
         <div v-if="notesStore.loading && notesStore.notes.length === 0" class="py-12 text-center text-slate-400 text-sm">
           <div class="w-6 h-6 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
           正在加载足迹笔记...
         </div>
 
-        <!-- 异常提示横幅 (防白屏或误导暂无笔记) -->
+        <!-- 异常提示横幅 (仅在列表为空时呈现，防误导暂无笔记) -->
         <div
-          v-else-if="notesStore.errorMessage"
+          v-else-if="notesStore.errorMessage && notesStore.notes.length === 0"
           class="bg-red-50 border border-red-200/80 rounded-2xl p-6 text-center space-y-3"
         >
           <AlertTriangle class="w-8 h-8 text-red-500 mx-auto" />
           <div class="text-sm font-medium text-red-800">{{ notesStore.errorMessage }}</div>
           <button
-            @click="notesStore.fetchNotes"
+            @click="notesStore.retryFetch()"
             class="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-medium rounded-lg transition-colors inline-flex items-center space-x-1.5 shadow-sm"
           >
             <RotateCcw class="w-3.5 h-3.5" />
@@ -82,13 +99,13 @@
           </button>
         </div>
 
-        <div v-else-if="notesStore.notes.length === 0" class="bg-white rounded-2xl border border-slate-200/80 p-8 text-center space-y-2">
+        <div v-if="!notesStore.loading && !notesStore.errorMessage && notesStore.notes.length === 0" class="bg-white rounded-2xl border border-slate-200/80 p-8 text-center space-y-2">
           <Sparkles class="w-8 h-8 text-slate-300 mx-auto" />
           <h4 class="text-sm font-semibold text-slate-700">暂无足迹记录</h4>
           <p class="text-xs text-slate-400">在上方输入框敲下一句话，立即开启您的智能知识库</p>
         </div>
 
-        <div v-else class="space-y-4">
+        <div v-if="notesStore.notes.length > 0" class="space-y-4">
           <NoteCard
             v-for="note in notesStore.notes"
             :key="note.id"
