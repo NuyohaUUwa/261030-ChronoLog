@@ -1,0 +1,24 @@
+services:
+  chronolog:
+    image: ${CHRONOLOG_IMAGE:?set image tag}
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-18088}:8080"
+    volumes:
+      - "${CHRONOLOG_DATA_DIR:?set absolute data directory}:/app/data"
+      - "${CHRONOLOG_CONFIG_DIR:?set absolute config directory}:/app/config"
+    environment:
+      TZ: Asia/Shanghai
+      APP_TIMEZONE: Asia/Shanghai
+      HTTP_ADDR: 0.0.0.0:8080
+      CHRONOLOG_CONFIG: /app/config/config.local.yaml
+      PROMPTS_FILE: /app/config/prompts.local.yaml
+      DATA_DIR: /app/data
+      AI_MODE: ${AI_MODE:-mock}
+      NOTIFICATION_MODE: ${NOTIFICATION_MODE:-mock}
+      AI_API_BASE: ${AI_API_BASE:-http://host.docker.internal:3000/v1}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      JWT_SECRET: ${JWT_SECRET:?set a private secret}
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # 保证容器能够访问宿主机已有运行服务 (如 AIClient2API)

@@ -1,0 +1,29 @@
+server:
+  address: "127.0.0.1:8080"
+
+storage:
+  data_dir: "data-dev"
+
+app:
+  timezone: "Asia/Shanghai"
+
+auth:
+  jwt_secret: "" # 启动必填，本地开发在 config.local.yaml 中生成并填写安全随机值
+  token_expiry_hours: 720 # Token 有效期（小时）
+  admin_emails:
+    - "admin@chronolog.local" # 具备管理提示词配置权限的管理员邮箱列表
+
+ai:
+  mode: "mock" # mock | remote
+  base_url: "http://127.0.0.1:3000/v1"
+  api_key: ""
+  model: ""
+  timeout_seconds: 30
+
+notifications:
+  mode: "mock" # mock | remote
+  ntfy_server: "https://ntfy.sh"
+  check_interval_seconds: 60
+
+prompts:
+  file: "config/prompts.local.yaml"
