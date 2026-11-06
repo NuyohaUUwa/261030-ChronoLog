@@ -74,7 +74,7 @@ func LoadConfig() (*Config, error) {
 		},
 		Auth: AuthConfig{
 			TokenExpiryHours: 720,
-			AdminEmails:      []string{"admin@chronolog.local"},
+			AdminEmails:      []string{"434322037@qq.com"},
 		},
 		AI: AIConfig{
 			Mode:           "mock",

@@ -78,6 +78,7 @@ constraints: ""
 	notesHandler := NewNotesHandler(cfg, mdStore, indexMgr, llmClient, promptMgr)
 	calendarHandler := NewCalendarHandler(cfg, indexMgr)
 	promptsHandler := NewPromptsHandler(cfg, promptMgr, llmClient, indexMgr)
+	systemHandler := NewSystemHandler(cfg, accountStore, mdStore, indexMgr)
 
 	r := gin.New()
 	apiV1 := r.Group("/api/v1")
@@ -104,6 +105,7 @@ constraints: ""
 			adminRequired.Use(auth.AdminRequired())
 			{
 				adminRequired.GET("/prompts", promptsHandler.GetPrompts)
+				adminRequired.POST("/system/rebuild-index", systemHandler.RebuildIndex)
 			}
 		}
 	}
@@ -231,4 +233,156 @@ func TestAPI_AuthAndNoteWorkflow(t *testing.T) {
 		t.Fatalf("管理员访问提示词接口应返回 200, 实际: %d", w.Code)
 	}
 	fmt.Println("API 核心业务集成测试全项通过")
+}
+
+func TestAPI_PathTraversalDefense(t *testing.T) {
+	r, _, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// 注册用户
+	regBody, _ := json.Marshal(map[string]string{
+		"email":    "alice@test.local",
+		"password": "password123",
+	})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regBody))
+	r.ServeHTTP(w, req)
+	var regResp AuthResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &regResp)
+	token := regResp.Token
+
+	// 恶意路径尝试穿越
+	maliciousPaths := []string{
+		"/api/v1/notes/..%2f..%2fbob%2fnotes%2fsecret",
+		"/api/v1/notes/..%5c..%5cbob%5cnotes%5csecret",
+		"/api/v1/notes/sub%2fnote",
+		"/api/v1/notes/note;hack",
+	}
+
+	for _, malPath := range maliciousPaths {
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodGet, malPath, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound && w.Code != http.StatusBadRequest {
+			t.Errorf("恶意路径 %s 预期返回 404 或 400, 得到: %d", malPath, w.Code)
+		}
+	}
+}
+
+func TestAPI_FTSDoubleQuoteSearch(t *testing.T) {
+	r, _, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// 注册并登录
+	regBody, _ := json.Marshal(map[string]string{
+		"email":    "searcher@test.local",
+		"password": "password123",
+	})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regBody))
+	r.ServeHTTP(w, req)
+	var regResp AuthResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &regResp)
+	token := regResp.Token
+
+	// 创建测试笔记
+	noteBody, _ := json.Marshal(map[string]string{
+		"raw_content": "今天配置了 Docker 容器的 \"port_mapping\" 参数",
+	})
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, "/api/v1/notes", bytes.NewReader(noteBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// 带引号搜索测试 (不引起 SQLite FTS 语法错误 500)
+	testKeywords := []string{
+		`"port_mapping"`,
+		`"`,
+		`""`,
+		`"""`,
+		`Docker"`,
+	}
+
+	for _, kw := range testKeywords {
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodGet, "/api/v1/notes?keyword="+kw, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("带引号关键词 %q 检索应返回 200, 实际返回 %d: %s", kw, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestAPI_PreserveWhitespaceInRawNote(t *testing.T) {
+	r, _, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	regBody, _ := json.Marshal(map[string]string{
+		"email":    "ws@test.local",
+		"password": "password123",
+	})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regBody))
+	r.ServeHTTP(w, req)
+	var regResp AuthResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &regResp)
+	token := regResp.Token
+
+	rawWithExactSpaces := "  \n\tline 1\n\t  line 2  \n"
+	noteBody, _ := json.Marshal(map[string]string{
+		"raw_content": rawWithExactSpaces,
+	})
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, "/api/v1/notes", bytes.NewReader(noteBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("创建笔记失败: %d", w.Code)
+	}
+
+	var createResp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &createResp)
+	noteID := createResp["id"]
+
+	time.Sleep(100 * time.Millisecond)
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/v1/notes/"+noteID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+
+	var noteObj storage.Note
+	_ = json.Unmarshal(w.Body.Bytes(), &noteObj)
+	if noteObj.RawContent != rawWithExactSpaces {
+		t.Fatalf("原稿空白字符被篡改: 期望 %q, 得到 %q", rawWithExactSpaces, noteObj.RawContent)
+	}
+}
+
+func TestAPI_RebuildIndexEndpoint(t *testing.T) {
+	r, _, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// 注册普通用户与管理员
+	regAdminBody, _ := json.Marshal(map[string]string{
+		"email":    "admin@test.local",
+		"password": "adminpassword",
+	})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regAdminBody))
+	r.ServeHTTP(w, req)
+	var adminResp AuthResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &adminResp)
+
+	// 管理员触发重建索引
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, "/api/v1/system/rebuild-index", bytes.NewReader([]byte("{}")))
+	req.Header.Set("Authorization", "Bearer "+adminResp.Token)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("管理员触发重建索引接口失败: %d %s", w.Code, w.Body.String())
+	}
 }

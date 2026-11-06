@@ -38,12 +38,12 @@ const submitting = ref(false);
 const notesStore = useNotesStore();
 
 async function handleSubmit() {
-  const text = content.value.trim();
-  if (!text || submitting.value) return;
+  if (!content.value.trim() || submitting.value) return;
 
+  const textToSave = content.value;
   submitting.value = true;
   try {
-    await notesStore.createNote(text);
+    await notesStore.createNote(textToSave);
     content.value = '';
   } catch (err) {
     alert('保存笔记失败，请检查网络或后端服务');

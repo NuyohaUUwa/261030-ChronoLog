@@ -95,3 +95,89 @@ func TestSanitizeEmail(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateNoteID_And_PathTraversal(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "chronolog_traversal_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	store := NewMarkdownStore(tempDir)
+	email := "alice@example.com"
+
+	// 恶意 Note ID 列表（包含 Windows 反斜杠、Linux 正斜杠、以及特殊符号）
+	maliciousNoteIDs := []string{
+		`..\..\bob@example.com\notes\secret`,
+		`../../bob@example.com/notes/secret`,
+		`..\hack`,
+		`../hack`,
+		`sub/dir`,
+		`sub\dir`,
+		`note;rm -rf`,
+		`note id with space`,
+		``,
+		`.`,
+		`..`,
+	}
+
+	for _, badID := range maliciousNoteIDs {
+		// 1. 验证 ValidateNoteID 直接拦截
+		if err := ValidateNoteID(badID); err == nil {
+			t.Errorf("ValidateNoteID 应拦截恶意 ID %q 但未拦截", badID)
+		}
+
+		// 2. 验证 ReadNote 拦截
+		if _, err := store.ReadNote(email, badID); err == nil {
+			t.Errorf("ReadNote 应拦截恶意 ID %q 但未拦截", badID)
+		}
+
+		// 3. 验证 DeleteNote 拦截
+		if err := store.DeleteNote(email, badID); err == nil {
+			t.Errorf("DeleteNote 应拦截恶意 ID %q 但未拦截", badID)
+		}
+	}
+
+	// 验证合法 Note ID 允许通过
+	validNoteIDs := []string{
+		"20261106_120000_abcd",
+		"note-1234_OK",
+		"normalNote",
+	}
+	for _, validID := range validNoteIDs {
+		if err := ValidateNoteID(validID); err != nil {
+			t.Errorf("ValidateNoteID 误拦截合法 ID %q: %v", validID, err)
+		}
+	}
+}
+
+func TestMarkdownStore_PreserveExactWhitespace(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "chronolog_whitespace_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	store := NewMarkdownStore(tempDir)
+	email := "whitespace@example.com"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+
+	rawWithSpaces := "   \n\tdef hello():\n\t    print('world')\n   \n"
+	note, err := store.SaveNoteRaw(email, rawWithSpaces, loc)
+	if err != nil {
+		t.Fatalf("SaveNoteRaw 失败: %v", err)
+	}
+
+	if note.RawContent != rawWithSpaces {
+		t.Fatalf("原稿空白未得到严格保真: 期望 %q, 得到 %q", rawWithSpaces, note.RawContent)
+	}
+
+	readNote, err := store.ReadNote(email, note.ID)
+	if err != nil {
+		t.Fatalf("ReadNote 失败: %v", err)
+	}
+
+	if readNote.RawContent != rawWithSpaces {
+		t.Fatalf("读取落盘后的原稿空白未严格保真: 期望 %q, 得到 %q", rawWithSpaces, readNote.RawContent)
+	}
+}

@@ -11,7 +11,7 @@ auth:
   jwt_secret: "" # 启动必填，本地开发在 config.local.yaml 中生成并填写安全随机值
   token_expiry_hours: 720 # Token 有效期（小时）
   admin_emails:
-    - "admin@chronolog.local" # 具备管理提示词配置权限的管理员邮箱列表
+    - "434322037@qq.com" # 具备管理提示词配置权限的管理员邮箱列表
 
 ai:
   mode: "mock" # mock | remote

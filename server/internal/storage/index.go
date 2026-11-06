@@ -229,12 +229,16 @@ func (u *UserIndex) QueryNotes(filter NoteFilter) ([]*Note, int, error) {
 		if len(runes) >= 3 {
 			fromClause += " JOIN notes_fts f ON m.id = f.id"
 			conditions = append(conditions, "notes_fts MATCH ?")
-			// 使用双引号包裹精确短语匹配
-			args = append(args, `"`+kw+`"`)
+			// 在 FTS5 中转义双引号，避免语法错误导致 500
+			escapedKw := strings.ReplaceAll(kw, `"`, `""`)
+			args = append(args, `"`+escapedKw+`"`)
 		} else {
-			// 短词（1-2字符）使用 LIKE 模糊匹配，保证中文单字与双字均可精确命中
-			conditions = append(conditions, "(m.raw_content LIKE ? OR m.polished_content LIKE ? OR m.tags_json LIKE ?)")
-			pattern := "%" + kw + "%"
+			// 短词（1-2字符）使用 LIKE 模糊匹配，转义特殊通配符
+			escapedLike := strings.ReplaceAll(kw, "/", "//")
+			escapedLike = strings.ReplaceAll(escapedLike, "%", "/%")
+			escapedLike = strings.ReplaceAll(escapedLike, "_", "/_")
+			conditions = append(conditions, "(m.raw_content LIKE ? ESCAPE '/' OR m.polished_content LIKE ? ESCAPE '/' OR m.tags_json LIKE ? ESCAPE '/')")
+			pattern := "%" + escapedLike + "%"
 			args = append(args, pattern, pattern, pattern)
 		}
 	}
@@ -445,4 +449,13 @@ func (u *UserIndex) RebuildIndex(notes []*Note, loc *time.Location) error {
 	}
 
 	return tx.Commit()
+}
+
+// GetTotalCount 查询当前索引库中记录的总数
+func (u *UserIndex) GetTotalCount() (int, error) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	var count int
+	err := u.db.QueryRow("SELECT COUNT(*) FROM notes_meta").Scan(&count)
+	return count, err
 }

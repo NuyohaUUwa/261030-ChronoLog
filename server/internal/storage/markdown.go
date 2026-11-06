@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +20,10 @@ var (
 	ErrNoteNotFound     = errors.New("笔记不存在")
 	ErrRevisionConflict = errors.New("数据已被修改，版本冲突 (409)")
 	ErrInvalidEmail     = errors.New("无效的用户邮箱路径")
+	ErrInvalidNoteID    = errors.New("无效的笔记 ID，拒绝路径穿越")
 )
+
+var noteIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
 type Reminder struct {
 	ID                 string `yaml:"id" json:"id"`
@@ -34,6 +38,7 @@ type NoteFrontMatter struct {
 	ID               string     `yaml:"id" json:"id"`
 	CreatedAt        string     `yaml:"created_at" json:"created_at"`
 	UpdatedAt        string     `yaml:"updated_at" json:"updated_at"`
+	Revision         int64      `yaml:"revision" json:"revision"` // 自增版本号防并发覆写
 	RawContent       string     `yaml:"raw_content" json:"raw_content"`
 	ProcessingStatus string     `yaml:"processing_status" json:"processing_status"` // processing | ready | failed
 	FailureReason    string     `yaml:"failure_reason,omitempty" json:"failure_reason,omitempty"`
@@ -72,6 +77,15 @@ func SanitizeEmail(email string) (string, error) {
 	return trimmed, nil
 }
 
+// ValidateNoteID 严格校验笔记 ID，防范 Windows/Linux 路径穿越注入
+func ValidateNoteID(noteID string) error {
+	trimmed := strings.TrimSpace(noteID)
+	if trimmed == "" || len(trimmed) > 64 || !noteIDRegex.MatchString(trimmed) || strings.Contains(trimmed, "..") || strings.ContainsAny(trimmed, "/\\:*?\"<>|") {
+		return ErrInvalidNoteID
+	}
+	return nil
+}
+
 // GetUserNotesDir 获取用户的 notes 根目录
 func (s *MarkdownStore) GetUserNotesDir(email string) (string, error) {
 	safeEmail, err := SanitizeEmail(email)
@@ -79,6 +93,27 @@ func (s *MarkdownStore) GetUserNotesDir(email string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(s.baseDataDir, "users", safeEmail, "notes"), nil
+}
+
+// GetNoteFilePath 安全解析单条笔记的绝对文件路径并校验路径隔离
+func (s *MarkdownStore) GetNoteFilePath(email, noteID string) (string, error) {
+	safeEmail, err := SanitizeEmail(email)
+	if err != nil {
+		return "", err
+	}
+	if err := ValidateNoteID(noteID); err != nil {
+		return "", err
+	}
+
+	userNotesDir := filepath.Join(s.baseDataDir, "users", safeEmail, "notes")
+	targetPath := filepath.Clean(filepath.Join(userNotesDir, noteID+".md"))
+
+	// 严格核验计算后的相对路径不能跳出当前用户的 notes 目录
+	rel, err := filepath.Rel(userNotesDir, targetPath)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == "." {
+		return "", ErrInvalidNoteID
+	}
+	return targetPath, nil
 }
 
 // GenerateNoteID 生成格式为 YYYYMMDD_HHMMSS_xxxx 的唯一笔记 ID
@@ -89,18 +124,19 @@ func GenerateNoteID(t time.Time) string {
 	return fmt.Sprintf("%s_%s", t.Format("20060102_150405"), randSuffix)
 }
 
-// SaveNoteRaw 创建并原子落盘初始随手记（保存权威原稿）
+// SaveNoteRaw 创建并原子落盘初始随手记（保存权威原稿，保留全部空白字符）
 func (s *MarkdownStore) SaveNoteRaw(email, rawContent string, loc *time.Location) (*Note, error) {
 	now := time.Now().In(loc)
 	id := GenerateNoteID(now)
-	timeStr := now.Format(time.RFC3339)
+	timeStr := now.Format(time.RFC3339Nano)
 
 	note := &Note{
 		NoteFrontMatter: NoteFrontMatter{
 			ID:               id,
 			CreatedAt:        timeStr,
 			UpdatedAt:        timeStr,
-			RawContent:       rawContent,
+			Revision:         1,
+			RawContent:       rawContent, // 无损保留原样，不截断空白
 			ProcessingStatus: "processing",
 			Tags:             []string{},
 			Reminders:        []Reminder{},
@@ -116,10 +152,12 @@ func (s *MarkdownStore) SaveNoteRaw(email, rawContent string, loc *time.Location
 
 // WriteNoteAtomic 原子替换写入 Note Markdown 文件
 func (s *MarkdownStore) WriteNoteAtomic(email string, note *Note) error {
-	notesDir, err := s.GetUserNotesDir(email)
+	targetPath, err := s.GetNoteFilePath(email, note.ID)
 	if err != nil {
 		return err
 	}
+
+	notesDir := filepath.Dir(targetPath)
 	if err := os.MkdirAll(notesDir, 0755); err != nil {
 		return fmt.Errorf("创建笔记目录失败: %w", err)
 	}
@@ -127,6 +165,12 @@ func (s *MarkdownStore) WriteNoteAtomic(email string, note *Note) error {
 	mu := s.getNoteLock(email, note.ID)
 	mu.Lock()
 	defer mu.Unlock()
+
+	return s.writeNoteAtomicUnderLock(targetPath, note)
+}
+
+func (s *MarkdownStore) writeNoteAtomicUnderLock(targetPath string, note *Note) error {
+	notesDir := filepath.Dir(targetPath)
 
 	// 序列化 YAML FrontMatter
 	fmBytes, err := yaml.Marshal(&note.NoteFrontMatter)
@@ -141,10 +185,8 @@ func (s *MarkdownStore) WriteNoteAtomic(email string, note *Note) error {
 	buf.WriteString(strings.TrimSpace(note.PolishedContent))
 	buf.WriteString("\n")
 
-	targetPath := filepath.Join(notesDir, note.ID+".md")
-	tmpPath := filepath.Join(notesDir, fmt.Sprintf(".%s.tmp", note.ID))
+	tmpPath := filepath.Join(notesDir, fmt.Sprintf(".%s_%d.tmp", note.ID, time.Now().UnixNano()))
 
-	// 写入临时文件并刷盘
 	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("创建临时笔记文件失败: %w", err)
@@ -163,7 +205,6 @@ func (s *MarkdownStore) WriteNoteAtomic(email string, note *Note) error {
 	}
 	f.Close()
 
-	// 原子替换
 	if err := os.Rename(tmpPath, targetPath); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("原子替换笔记文件失败: %w", err)
@@ -174,12 +215,11 @@ func (s *MarkdownStore) WriteNoteAtomic(email string, note *Note) error {
 
 // ReadNote 读取并解析单个 Markdown 笔记
 func (s *MarkdownStore) ReadNote(email, noteID string) (*Note, error) {
-	notesDir, err := s.GetUserNotesDir(email)
+	targetPath, err := s.GetNoteFilePath(email, noteID)
 	if err != nil {
 		return nil, err
 	}
 
-	targetPath := filepath.Join(notesDir, noteID+".md")
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -191,6 +231,48 @@ func (s *MarkdownStore) ReadNote(email, noteID string) (*Note, error) {
 	return ParseNoteContent(data)
 }
 
+// MutateNoteAtomic 在独占锁下安全执行 读取 -> 修改 -> 原子刷盘，避免并发覆写
+func (s *MarkdownStore) MutateNoteAtomic(email, noteID string, mutateFn func(note *Note) error, loc *time.Location) (*Note, error) {
+	targetPath, err := s.GetNoteFilePath(email, noteID)
+	if err != nil {
+		return nil, err
+	}
+
+	mu := s.getNoteLock(email, noteID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNoteNotFound
+		}
+		return nil, err
+	}
+
+	note, err := ParseNoteContent(data)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := mutateFn(note); err != nil {
+		return nil, err
+	}
+
+	note.Revision++
+	now := time.Now()
+	if loc != nil {
+		now = now.In(loc)
+	}
+	note.UpdatedAt = now.Format(time.RFC3339Nano)
+
+	if err := s.writeNoteAtomicUnderLock(targetPath, note); err != nil {
+		return nil, err
+	}
+
+	return note, nil
+}
+
 // ParseNoteContent 将 Markdown 文件内容解析为 Note 对象
 func ParseNoteContent(data []byte) (*Note, error) {
 	content := string(data)
@@ -198,7 +280,6 @@ func ParseNoteContent(data []byte) (*Note, error) {
 		return nil, fmt.Errorf("非法笔记格式: 缺少 YAML FrontMatter 起始标记")
 	}
 
-	// 查找第二个 ---
 	rest := content[3:]
 	idx := strings.Index(rest, "\n---")
 	if idx == -1 {
@@ -207,7 +288,7 @@ func ParseNoteContent(data []byte) (*Note, error) {
 
 	yamlStr := rest[:idx]
 	bodyStr := ""
-	endOfFm := idx + 4 // 跳过 \n---
+	endOfFm := idx + 4
 	if len(rest) > endOfFm {
 		bodyStr = strings.TrimSpace(rest[endOfFm:])
 	}
@@ -223,28 +304,32 @@ func ParseNoteContent(data []byte) (*Note, error) {
 	if note.Reminders == nil {
 		note.Reminders = []Reminder{}
 	}
+	if note.Revision <= 0 {
+		note.Revision = 1
+	}
 
 	return &note, nil
 }
 
 // UpdateNoteWithRevision 带版本冲突校验的更新
 func (s *MarkdownStore) UpdateNoteWithRevision(email string, note *Note, expectedUpdatedAt string, loc *time.Location) error {
-	existing, err := s.ReadNote(email, note.ID)
-	if err != nil {
-		return err
-	}
-
-	if expectedUpdatedAt != "" && existing.UpdatedAt != expectedUpdatedAt {
-		return ErrRevisionConflict
-	}
-
-	note.UpdatedAt = time.Now().In(loc).Format(time.RFC3339)
-	return s.WriteNoteAtomic(email, note)
+	_, err := s.MutateNoteAtomic(email, note.ID, func(existing *Note) error {
+		if expectedUpdatedAt != "" && existing.UpdatedAt != expectedUpdatedAt {
+			return ErrRevisionConflict
+		}
+		existing.PolishedContent = note.PolishedContent
+		existing.Tags = note.Tags
+		existing.Reminders = note.Reminders
+		existing.ProcessingStatus = note.ProcessingStatus
+		existing.FailureReason = note.FailureReason
+		return nil
+	}, loc)
+	return err
 }
 
 // DeleteNote 删除笔记
 func (s *MarkdownStore) DeleteNote(email, noteID string) error {
-	notesDir, err := s.GetUserNotesDir(email)
+	targetPath, err := s.GetNoteFilePath(email, noteID)
 	if err != nil {
 		return err
 	}
@@ -253,7 +338,6 @@ func (s *MarkdownStore) DeleteNote(email, noteID string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	targetPath := filepath.Join(notesDir, noteID+".md")
 	if err := os.Remove(targetPath); err != nil {
 		if os.IsNotExist(err) {
 			return ErrNoteNotFound
@@ -283,6 +367,7 @@ func ListUserDirs(usersBaseDir string) ([]string, error) {
 	return users, nil
 }
 
+// ListAllNotes 读取用户全部笔记（用于启动时索引同步与全量列表）
 func (s *MarkdownStore) ListAllNotes(email string) ([]*Note, error) {
 	notesDir, err := s.GetUserNotesDir(email)
 	if err != nil {

@@ -116,6 +116,10 @@ func main() {
 	notesHandler := api.NewNotesHandler(cfg, mdStore, indexMgr, llmClient, promptMgr)
 	calendarHandler := api.NewCalendarHandler(cfg, indexMgr)
 	promptsHandler := api.NewPromptsHandler(cfg, promptMgr, llmClient, indexMgr)
+	systemHandler := api.NewSystemHandler(cfg, accountStore, mdStore, indexMgr)
+
+	// 启动后台自愈检查（索引完整性校验与未决 AI 任务重试）
+	go runStartupRecovery(cfg, accountStore, mdStore, indexMgr, notesHandler)
 
 	// API 路由组
 	apiV1 := r.Group("/api/v1")
@@ -123,8 +127,10 @@ func main() {
 		// 健康检查
 		apiV1.GET("/health", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
-				"status": "ok",
-				"time":   time.Now().In(cfg.Location).Format(time.RFC3339),
+				"status":             "ok",
+				"time":               time.Now().In(cfg.Location).Format(time.RFC3339),
+				"ai_mode":            cfg.AI.Mode,
+				"notifications_mode": cfg.Notifications.Mode,
 			})
 		})
 
@@ -160,6 +166,7 @@ func main() {
 				adminRequired.GET("/prompts", promptsHandler.GetPrompts)
 				adminRequired.PUT("/prompts", promptsHandler.UpdatePrompts)
 				adminRequired.POST("/prompts/test", promptsHandler.TestPrompt)
+				adminRequired.POST("/system/rebuild-index", systemHandler.RebuildIndex)
 			}
 		}
 	}
@@ -227,4 +234,57 @@ func main() {
 	}
 
 	log.Println("ChronoLog 服务已安全退出")
+}
+
+// runStartupRecovery 启动时检查各用户索引完整性并恢复中断的 AI 任务
+func runStartupRecovery(cfg *config.Config, accountStore *storage.AccountStore, mdStore *storage.MarkdownStore, indexMgr *storage.IndexManager, notesHandler *api.NotesHandler) {
+	log.Println("[启动自愈] 正在检查各用户索引与中断任务...")
+	users, err := accountStore.ListUsers()
+	if err != nil {
+		log.Printf("[启动自愈] 读取用户列表失败: %v", err)
+		return
+	}
+
+	rebuiltUsers := 0
+	recoveredTasks := 0
+
+	for _, u := range users {
+		notes, err := mdStore.ListAllNotes(u.Email)
+		if err != nil {
+			log.Printf("[启动自愈] 用户 %s 读取笔记失败: %v", u.Email, err)
+			continue
+		}
+
+		idx, err := indexMgr.GetUserIndex(u.Email)
+		if err != nil {
+			log.Printf("[启动自愈] 初始化用户 %s 索引失败: %v", u.Email, err)
+			continue
+		}
+
+		count, err := idx.GetTotalCount()
+		needRebuild := false
+		if err != nil || (len(notes) > 0 && count == 0) {
+			needRebuild = true
+		}
+
+		if needRebuild {
+			log.Printf("[启动自愈] 用户 %s 索引缺失或为空 (笔记数: %d, 索引数: %d)，开始全量重建...", u.Email, len(notes), count)
+			if err := idx.RebuildIndex(notes, cfg.Location); err != nil {
+				log.Printf("[启动自愈] 用户 %s 索引重建失败: %v", u.Email, err)
+			} else {
+				rebuiltUsers++
+			}
+		}
+
+		// 检查中断的任务 (processing_status == "processing")
+		for _, note := range notes {
+			if note.ProcessingStatus == "processing" {
+				log.Printf("[启动自愈] 发现用户 %s 的未完成任务 %s，重新发起异步处理...", u.Email, note.ID)
+				recoveredTasks++
+				go notesHandler.ProcessNoteAsync(u.Email, note.ID)
+			}
+		}
+	}
+
+	log.Printf("[启动自愈] 检查完成: 重建了 %d 个用户索引，恢复了 %d 个中断的 AI 处理任务", rebuiltUsers, recoveredTasks)
 }

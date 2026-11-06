@@ -167,35 +167,46 @@ func (s *Scheduler) checkAndDispatch() {
 		}
 
 		for _, note := range notes {
-			changed := false
-			for i, rem := range note.Reminders {
+			for _, rem := range note.Reminders {
 				// 用户待办为 pending，且推送状态为 pending
 				if rem.Status == "pending" && rem.NotificationStatus == "pending" {
 					remTime, err := time.Parse(time.RFC3339, rem.RemindAt)
 					if err == nil && !remTime.After(now) {
 						// 到期，执行派发
 						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-						clickURL := fmt.Sprintf("https://notes.uufang.space/?note_id=%s", note.ID)
-						err := s.sender.Send(ctx, topic, "ChronoLog 备忘提醒", rem.Title, clickURL)
+						clickURL := fmt.Sprintf("https://chronolog.uufang.space/?note_id=%s", note.ID)
+						sendErr := s.sender.Send(ctx, topic, "ChronoLog 备忘提醒", rem.Title, clickURL)
 						cancel()
 
-						if err != nil {
-							log.Printf("[提醒推送失败] 笔记ID: %s, 提醒ID: %s: %v", note.ID, rem.ID, err)
-							note.Reminders[i].NotificationStatus = "failed"
+						remID := rem.ID
+						noteID := note.ID
+						if sendErr != nil {
+							log.Printf("[提醒推送失败] 笔记ID: %s, 提醒ID: %s: %v", noteID, remID, sendErr)
 						} else {
-							log.Printf("[提醒推送成功] 笔记ID: %s, 提醒ID: %s", note.ID, rem.ID)
-							note.Reminders[i].NotificationStatus = "sent"
+							log.Printf("[提醒推送成功] 笔记ID: %s, 提醒ID: %s", noteID, remID)
 						}
-						changed = true
-					}
-				}
-			}
 
-			if changed {
-				note.UpdatedAt = time.Now().In(s.loc).Format(time.RFC3339)
-				_ = s.mdStore.WriteNoteAtomic(email, note)
-				if idx, err := s.indexMgr.GetUserIndex(email); err == nil {
-					_ = idx.IndexNote(note, s.loc)
+						// 使用原子突变更新单个提醒状态，绝不覆写用户的新修改
+						updatedNote, mutateErr := s.mdStore.MutateNoteAtomic(email, noteID, func(targetNote *storage.Note) error {
+							for i := range targetNote.Reminders {
+								if targetNote.Reminders[i].ID == remID {
+									if sendErr != nil {
+										targetNote.Reminders[i].NotificationStatus = "failed"
+									} else {
+										targetNote.Reminders[i].NotificationStatus = "sent"
+									}
+									break
+								}
+							}
+							return nil
+						}, s.loc)
+
+						if mutateErr == nil && updatedNote != nil {
+							if idx, err := s.indexMgr.GetUserIndex(email); err == nil {
+								_ = idx.IndexNote(updatedNote, s.loc)
+							}
+						}
+					}
 				}
 			}
 		}

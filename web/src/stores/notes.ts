@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import api, { Note } from '../api/client';
+import { useCalendarStore } from './calendar';
 
 export const useNotesStore = defineStore('notes', {
   state: () => ({
@@ -11,12 +12,14 @@ export const useNotesStore = defineStore('notes', {
     selectedTag: '',
     searchKeyword: '',
     loading: false,
+    errorMessage: '',
     selectedNote: null as Note | null,
     pollingMap: {} as Record<string, number>, // noteID -> timer ID
   }),
   actions: {
     async fetchNotes() {
       this.loading = true;
+      this.errorMessage = '';
       try {
         const res = await api.listNotes({
           date: this.selectedDate || undefined,
@@ -34,8 +37,32 @@ export const useNotesStore = defineStore('notes', {
             this.startPollingNote(note.id);
           }
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('获取笔记列表失败:', err);
+        this.errorMessage = err.response?.data?.error?.message || err.message || '加载笔记列表失败，请检查网络或后端服务';
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async loadMore() {
+      if (this.loading || this.notes.length >= this.total) return;
+      this.page++;
+      this.loading = true;
+      try {
+        const res = await api.listNotes({
+          date: this.selectedDate || undefined,
+          tag: this.selectedTag || undefined,
+          keyword: this.searchKeyword || undefined,
+          page: this.page,
+          limit: this.limit,
+        });
+        const items = res.data.items || [];
+        this.notes.push(...items);
+        this.total = res.data.total || 0;
+      } catch (err: any) {
+        console.error('加载更多失败:', err);
+        this.errorMessage = err.response?.data?.error?.message || err.message || '加载更多笔记失败';
       } finally {
         this.loading = false;
       }
@@ -58,6 +85,11 @@ export const useNotesStore = defineStore('notes', {
       this.notes.unshift(optimisticNote);
       this.total++;
       this.startPollingNote(newId);
+
+      // 联动刷新日历打点
+      const calendarStore = useCalendarStore();
+      calendarStore.fetchSummary();
+
       return res.data;
     },
 
@@ -81,6 +113,10 @@ export const useNotesStore = defineStore('notes', {
 
           if (updated.processing_status !== 'processing' || count >= maxCount) {
             this.stopPollingNote(noteId);
+            // AI 处理完毕，刷新日历与标签
+            const calendarStore = useCalendarStore();
+            calendarStore.fetchSummary();
+            calendarStore.fetchTags();
           }
         } catch {
           this.stopPollingNote(noteId);
@@ -105,6 +141,11 @@ export const useNotesStore = defineStore('notes', {
         this.selectedNote = null;
       }
       this.stopPollingNote(id);
+
+      // 联动刷新日历与标签
+      const calendarStore = useCalendarStore();
+      calendarStore.fetchSummary();
+      calendarStore.fetchTags();
     },
 
     async retryNote(id: string) {
@@ -125,6 +166,10 @@ export const useNotesStore = defineStore('notes', {
           rem.status = 'completed';
         }
       }
+
+      // 联动刷新日历提醒圆点
+      const calendarStore = useCalendarStore();
+      calendarStore.fetchSummary();
     },
 
     setSelectedDate(date: string) {

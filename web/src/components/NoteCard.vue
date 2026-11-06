@@ -70,8 +70,9 @@
       <!-- 润色正文 -->
       <div
         v-if="note.polished_content"
-        class="prose prose-sm max-w-none text-slate-700 leading-relaxed break-words whitespace-pre-line"
-      >{{ note.polished_content }}</div>
+        class="prose prose-sm max-w-none text-slate-700 leading-relaxed break-words"
+        v-html="renderedPolishedContent"
+      ></div>
       <div
         v-else
         class="text-slate-600 text-sm leading-relaxed whitespace-pre-line"
@@ -119,7 +120,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
+import { marked } from 'marked';
 import { Clock, Bell, CheckCircle, Check, Trash2, Sparkles, AlertCircle, RotateCcw, Tag, Eye, ChevronDown, FileText } from 'lucide-vue-next';
 import { Note } from '../api/client';
 import { useNotesStore } from '../stores/notes';
@@ -130,6 +132,11 @@ const props = defineProps<{
 
 const notesStore = useNotesStore();
 const showRaw = ref(false);
+
+const renderedPolishedContent = computed(() => {
+  if (!props.note.polished_content) return '';
+  return marked.parse(props.note.polished_content, { breaks: true, gfm: true }) as string;
+});
 
 function formatTime(isoStr: string): string {
   try {

@@ -114,6 +114,29 @@ func (s *AccountStore) GetUserByEmail(email string) (*User, error) {
 	return &u, nil
 }
 
+// ListUsers 查询所有用户
+func (s *AccountStore) ListUsers() ([]*User, error) {
+	query := `SELECT email, password_hash, ntfy_topic, created_at, updated_at FROM users`
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []*User
+	for rows.Next() {
+		var u User
+		var createdStr, updatedStr string
+		if err := rows.Scan(&u.Email, &u.PasswordHash, &u.NtfyTopic, &createdStr, &updatedStr); err != nil {
+			return nil, err
+		}
+		u.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		u.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
+		users = append(users, &u)
+	}
+	return users, rows.Err()
+}
+
 // UpdateUserTopic 更新用户的 Ntfy 主题
 func (s *AccountStore) UpdateUserTopic(email, topic string) error {
 	nowStr := time.Now().Format(time.RFC3339)

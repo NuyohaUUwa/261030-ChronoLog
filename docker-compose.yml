@@ -19,6 +19,7 @@ services:
       AI_API_BASE: ${AI_API_BASE:-http://host.docker.internal:3000/v1}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-434322037@qq.com}
       JWT_SECRET: ${JWT_SECRET:?set a private secret}
     extra_hosts:
       - "host.docker.internal:host-gateway" # 保证容器能够访问宿主机已有运行服务 (如 AIClient2API)

@@ -66,6 +66,22 @@
           正在加载足迹笔记...
         </div>
 
+        <!-- 异常提示横幅 (防白屏或误导暂无笔记) -->
+        <div
+          v-else-if="notesStore.errorMessage"
+          class="bg-red-50 border border-red-200/80 rounded-2xl p-6 text-center space-y-3"
+        >
+          <AlertTriangle class="w-8 h-8 text-red-500 mx-auto" />
+          <div class="text-sm font-medium text-red-800">{{ notesStore.errorMessage }}</div>
+          <button
+            @click="notesStore.fetchNotes"
+            class="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-medium rounded-lg transition-colors inline-flex items-center space-x-1.5 shadow-sm"
+          >
+            <RotateCcw class="w-3.5 h-3.5" />
+            <span>重新加载</span>
+          </button>
+        </div>
+
         <div v-else-if="notesStore.notes.length === 0" class="bg-white rounded-2xl border border-slate-200/80 p-8 text-center space-y-2">
           <Sparkles class="w-8 h-8 text-slate-300 mx-auto" />
           <h4 class="text-sm font-semibold text-slate-700">暂无足迹记录</h4>
@@ -78,6 +94,17 @@
             :key="note.id"
             :note="note"
           />
+
+          <!-- 加载更多分页控制 -->
+          <div v-if="notesStore.notes.length < notesStore.total" class="pt-2 text-center">
+            <button
+              @click="notesStore.loadMore"
+              :disabled="notesStore.loading"
+              class="px-5 py-2.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-600 rounded-xl text-xs font-medium transition-all shadow-sm"
+            >
+              {{ notesStore.loading ? '正在加载...' : `加载更多 (已展示 ${notesStore.notes.length} / 共 ${notesStore.total} 条)` }}
+            </button>
+          </div>
         </div>
       </main>
 
@@ -103,7 +130,7 @@
 
 <script setup lang="ts">
 import { onMounted } from 'vue';
-import { Tag as TagIcon, Filter, Sparkles, ShieldCheck } from 'lucide-vue-next';
+import { Tag as TagIcon, Filter, Sparkles, ShieldCheck, AlertTriangle, RotateCcw } from 'lucide-vue-next';
 import { useNotesStore } from '../stores/notes';
 import { useCalendarStore } from '../stores/calendar';
 import { useAuthStore } from '../stores/auth';

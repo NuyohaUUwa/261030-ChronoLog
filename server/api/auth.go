@@ -35,10 +35,12 @@ type AuthRequest struct {
 }
 
 type AuthResponse struct {
-	Token     string `json:"token"`
-	Email     string `json:"email"`
-	IsAdmin   bool   `json:"is_admin"`
-	NtfyTopic string `json:"ntfy_topic"`
+	Token             string `json:"token"`
+	Email             string `json:"email"`
+	IsAdmin           bool   `json:"is_admin"`
+	NtfyTopic         string `json:"ntfy_topic"`
+	AIMode            string `json:"ai_mode,omitempty"`
+	NotificationsMode string `json:"notifications_mode,omitempty"`
 }
 
 func generateRandomTopic() string {
@@ -91,10 +93,12 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, AuthResponse{
-		Token:     token,
-		Email:     user.Email,
-		IsAdmin:   isAdmin,
-		NtfyTopic: user.NtfyTopic,
+		Token:             token,
+		Email:             user.Email,
+		IsAdmin:           isAdmin,
+		NtfyTopic:         user.NtfyTopic,
+		AIMode:            h.cfg.AI.Mode,
+		NotificationsMode: h.cfg.Notifications.Mode,
 	})
 }
 
@@ -126,10 +130,12 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, AuthResponse{
-		Token:     token,
-		Email:     user.Email,
-		IsAdmin:   isAdmin,
-		NtfyTopic: user.NtfyTopic,
+		Token:             token,
+		Email:             user.Email,
+		IsAdmin:           isAdmin,
+		NtfyTopic:         user.NtfyTopic,
+		AIMode:            h.cfg.AI.Mode,
+		NotificationsMode: h.cfg.Notifications.Mode,
 	})
 }
 
@@ -144,10 +150,12 @@ func (h *AuthHandler) GetMe(c *gin.Context) {
 
 	isAdmin := h.cfg.IsAdmin(user.Email)
 	c.JSON(http.StatusOK, gin.H{
-		"email":      user.Email,
-		"is_admin":   isAdmin,
-		"ntfy_topic": user.NtfyTopic,
-		"created_at": user.CreatedAt,
+		"email":              user.Email,
+		"is_admin":           isAdmin,
+		"ntfy_topic":         user.NtfyTopic,
+		"created_at":         user.CreatedAt,
+		"ai_mode":            h.cfg.AI.Mode,
+		"notifications_mode": h.cfg.Notifications.Mode,
 	})
 }
 

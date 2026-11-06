@@ -52,7 +52,7 @@ type UpdateNoteRequest struct {
 	UpdatedAt       string              `json:"updated_at"` // 修订版本校验
 }
 
-// CreateNote 创建随手记（毫秒级落盘原稿，异步触发 AI 流水线）
+// CreateNote 创建随手记（毫秒级落盘原稿，保持原汁原味首尾空白不被丢弃）
 func (h *NotesHandler) CreateNote(c *gin.Context) {
 	email := c.GetString("user_email")
 	var req CreateNoteRequest
@@ -61,14 +61,14 @@ func (h *NotesHandler) CreateNote(c *gin.Context) {
 		return
 	}
 
-	raw := strings.TrimSpace(req.RawContent)
-	if raw == "" {
+	// 仅使用 TrimSpace 判断是否全为空白，保存时严格保留用户输入的原始字符串（包含首尾空格与换行）
+	if strings.TrimSpace(req.RawContent) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "INVALID_PARAMS", "message": "随笔原稿不能为空"}})
 		return
 	}
 
 	// 1. 毫秒级保存权威原稿至 Markdown 文件
-	note, err := h.mdStore.SaveNoteRaw(email, raw, h.cfg.Location)
+	note, err := h.mdStore.SaveNoteRaw(email, req.RawContent, h.cfg.Location)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "STORAGE_ERROR", "message": "保存笔记原稿失败: " + err.Error()}})
 		return
@@ -76,11 +76,13 @@ func (h *NotesHandler) CreateNote(c *gin.Context) {
 
 	// 2. 同步写入 SQLite 检索元数据，确保创建后立即被查询到
 	if idx, err := h.indexMgr.GetUserIndex(email); err == nil {
-		_ = idx.IndexNote(note, h.cfg.Location)
+		if indexErr := idx.IndexNote(note, h.cfg.Location); indexErr != nil {
+			log.Printf("[索引警告] 初始创建笔记索引写入失败: %v", indexErr)
+		}
 	}
 
 	// 3. 异步启动 AI 处理流水线
-	go h.processNoteAsync(email, note.ID)
+	go h.ProcessNoteAsync(email, note.ID)
 
 	// 4. 返回 HTTP 202 Accepted
 	c.JSON(http.StatusAccepted, gin.H{
@@ -89,13 +91,16 @@ func (h *NotesHandler) CreateNote(c *gin.Context) {
 	})
 }
 
-// processNoteAsync 执行异步 AI 润色与结构化抽取流水线
-func (h *NotesHandler) processNoteAsync(email, noteID string) {
+// ProcessNoteAsync 执行异步 AI 润色与结构化抽取流水线（防并发覆盖）
+func (h *NotesHandler) ProcessNoteAsync(email, noteID string) {
 	note, err := h.mdStore.ReadNote(email, noteID)
 	if err != nil {
 		log.Printf("[AI 流水线] 读取笔记失败 %s: %v", noteID, err)
 		return
 	}
+
+	initialRawContent := note.RawContent
+	initialRevision := note.Revision
 
 	// 提取用户现有常用标签以作为上下文 Few-Shot 参考
 	var userTagNames []string
@@ -129,42 +134,52 @@ func (h *NotesHandler) processNoteAsync(email, noteID string) {
 		return
 	}
 
-	// 检查处理期间笔记是否被用户手动修改过
-	currentNote, err := h.mdStore.ReadNote(email, noteID)
+	// 使用独占锁 MutateNoteAtomic 进行原子写回，核对版本防并发覆盖
+	updatedNote, err := h.mdStore.MutateNoteAtomic(email, noteID, func(currentNote *storage.Note) error {
+		currentNote.ProcessingStatus = "ready"
+		currentNote.FailureReason = ""
+
+		// 如果用户在处理期间没有修改正文（或者当前正文为空/等于初始），才用 AI 润色回填
+		if currentNote.Revision == initialRevision || currentNote.RawContent == initialRawContent {
+			if currentNote.PolishedContent == "" {
+				currentNote.PolishedContent = result.PolishedContent
+			}
+			if len(currentNote.Tags) == 0 {
+				currentNote.Tags = result.Tags
+			}
+			if len(currentNote.Reminders) == 0 {
+				currentNote.Reminders = result.Reminders
+			}
+		} else {
+			// 用户在处理期间产生了新编辑，保留用户当前编辑，仅在未设置时补充 AI 抽取项
+			if currentNote.PolishedContent == "" {
+				currentNote.PolishedContent = result.PolishedContent
+			}
+		}
+		return nil
+	}, h.cfg.Location)
+
 	if err != nil {
-		return // 可能已被删除
-	}
-
-	// 回填润色结果
-	currentNote.ProcessingStatus = "ready"
-	currentNote.FailureReason = ""
-	currentNote.PolishedContent = result.PolishedContent
-	currentNote.Tags = result.Tags
-	currentNote.Reminders = result.Reminders
-	currentNote.UpdatedAt = time.Now().In(h.cfg.Location).Format(time.RFC3339)
-
-	if err := h.mdStore.WriteNoteAtomic(email, currentNote); err != nil {
 		log.Printf("[AI 流水线] 原子写入笔记失败 %s: %v", noteID, err)
 		return
 	}
 
 	if idx, err := h.indexMgr.GetUserIndex(email); err == nil {
-		_ = idx.IndexNote(currentNote, h.cfg.Location)
+		_ = idx.IndexNote(updatedNote, h.cfg.Location)
 	}
 }
 
 func (h *NotesHandler) markNoteFailed(email, noteID, reason string) {
-	currentNote, err := h.mdStore.ReadNote(email, noteID)
-	if err != nil {
-		return
-	}
-	currentNote.ProcessingStatus = "failed"
-	currentNote.FailureReason = reason
-	currentNote.UpdatedAt = time.Now().In(h.cfg.Location).Format(time.RFC3339)
+	updatedNote, err := h.mdStore.MutateNoteAtomic(email, noteID, func(currentNote *storage.Note) error {
+		currentNote.ProcessingStatus = "failed"
+		currentNote.FailureReason = reason
+		return nil
+	}, h.cfg.Location)
 
-	_ = h.mdStore.WriteNoteAtomic(email, currentNote)
-	if idx, err := h.indexMgr.GetUserIndex(email); err == nil {
-		_ = idx.IndexNote(currentNote, h.cfg.Location)
+	if err == nil {
+		if idx, err := h.indexMgr.GetUserIndex(email); err == nil {
+			_ = idx.IndexNote(updatedNote, h.cfg.Location)
+		}
 	}
 }
 
@@ -201,14 +216,19 @@ func (h *NotesHandler) ListNotes(c *gin.Context) {
 	})
 }
 
-// GetNote 获取单条笔记详情（直接读取 Markdown 权威文件）
+// GetNote 获取单条笔记详情（严格校验 ID 隔离防目录穿越）
 func (h *NotesHandler) GetNote(c *gin.Context) {
 	email := c.GetString("user_email")
 	noteID := c.Param("id")
 
+	if err := storage.ValidateNoteID(noteID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
+		return
+	}
+
 	note, err := h.mdStore.ReadNote(email, noteID)
 	if err != nil {
-		if errors.Is(err, storage.ErrNoteNotFound) {
+		if errors.Is(err, storage.ErrNoteNotFound) || errors.Is(err, storage.ErrInvalidNoteID) {
 			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
 			return
 		}
@@ -219,10 +239,15 @@ func (h *NotesHandler) GetNote(c *gin.Context) {
 	c.JSON(http.StatusOK, note)
 }
 
-// UpdateNote 更新笔记内容或标签（支持修订版本校验防冲突）
+// UpdateNote 更新笔记内容或标签（原子锁中进行版本冲突校验）
 func (h *NotesHandler) UpdateNote(c *gin.Context) {
 	email := c.GetString("user_email")
 	noteID := c.Param("id")
+
+	if err := storage.ValidateNoteID(noteID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
+		return
+	}
 
 	var req UpdateNoteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -230,9 +255,30 @@ func (h *NotesHandler) UpdateNote(c *gin.Context) {
 		return
 	}
 
-	note, err := h.mdStore.ReadNote(email, noteID)
+	updatedNote, err := h.mdStore.MutateNoteAtomic(email, noteID, func(note *storage.Note) error {
+		// 版本冲突检查（在同个互斥锁保护下执行）
+		if req.UpdatedAt != "" && note.UpdatedAt != req.UpdatedAt {
+			return storage.ErrRevisionConflict
+		}
+
+		if req.PolishedContent != nil {
+			note.PolishedContent = *req.PolishedContent
+		}
+		if req.Tags != nil {
+			note.Tags = *req.Tags
+		}
+		if req.Reminders != nil {
+			note.Reminders = *req.Reminders
+		}
+		return nil
+	}, h.cfg.Location)
+
 	if err != nil {
-		if errors.Is(err, storage.ErrNoteNotFound) {
+		if errors.Is(err, storage.ErrRevisionConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "REVISION_CONFLICT", "message": "笔记已被修改，请刷新后重试"}})
+			return
+		}
+		if errors.Is(err, storage.ErrNoteNotFound) || errors.Is(err, storage.ErrInvalidNoteID) {
 			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
 			return
 		}
@@ -240,34 +286,11 @@ func (h *NotesHandler) UpdateNote(c *gin.Context) {
 		return
 	}
 
-	// 版本冲突检查
-	if req.UpdatedAt != "" && note.UpdatedAt != req.UpdatedAt {
-		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "REVISION_CONFLICT", "message": "笔记已被修改，请刷新后重试"}})
-		return
-	}
-
-	if req.PolishedContent != nil {
-		note.PolishedContent = *req.PolishedContent
-	}
-	if req.Tags != nil {
-		note.Tags = *req.Tags
-	}
-	if req.Reminders != nil {
-		note.Reminders = *req.Reminders
-	}
-
-	note.UpdatedAt = time.Now().In(h.cfg.Location).Format(time.RFC3339)
-
-	if err := h.mdStore.WriteNoteAtomic(email, note); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "STORAGE_ERROR", "message": err.Error()}})
-		return
-	}
-
 	if idx, err := h.indexMgr.GetUserIndex(email); err == nil {
-		_ = idx.IndexNote(note, h.cfg.Location)
+		_ = idx.IndexNote(updatedNote, h.cfg.Location)
 	}
 
-	c.JSON(http.StatusOK, note)
+	c.JSON(http.StatusOK, updatedNote)
 }
 
 // DeleteNote 删除笔记
@@ -275,8 +298,13 @@ func (h *NotesHandler) DeleteNote(c *gin.Context) {
 	email := c.GetString("user_email")
 	noteID := c.Param("id")
 
+	if err := storage.ValidateNoteID(noteID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
+		return
+	}
+
 	if err := h.mdStore.DeleteNote(email, noteID); err != nil {
-		if errors.Is(err, storage.ErrNoteNotFound) {
+		if errors.Is(err, storage.ErrNoteNotFound) || errors.Is(err, storage.ErrInvalidNoteID) {
 			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
 			return
 		}
@@ -296,25 +324,27 @@ func (h *NotesHandler) RetryNoteAI(c *gin.Context) {
 	email := c.GetString("user_email")
 	noteID := c.Param("id")
 
-	note, err := h.mdStore.ReadNote(email, noteID)
+	if err := storage.ValidateNoteID(noteID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
+		return
+	}
+
+	updatedNote, err := h.mdStore.MutateNoteAtomic(email, noteID, func(note *storage.Note) error {
+		note.ProcessingStatus = "processing"
+		note.FailureReason = ""
+		return nil
+	}, h.cfg.Location)
+
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
 		return
 	}
 
-	note.ProcessingStatus = "processing"
-	note.FailureReason = ""
-	note.UpdatedAt = time.Now().In(h.cfg.Location).Format(time.RFC3339)
-
-	if err := h.mdStore.WriteNoteAtomic(email, note); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "STORAGE_ERROR", "message": err.Error()}})
-		return
-	}
 	if idx, err := h.indexMgr.GetUserIndex(email); err == nil {
-		_ = idx.IndexNote(note, h.cfg.Location)
+		_ = idx.IndexNote(updatedNote, h.cfg.Location)
 	}
 
-	go h.processNoteAsync(email, noteID)
+	go h.ProcessNoteAsync(email, noteID)
 
 	c.JSON(http.StatusAccepted, gin.H{
 		"id":     noteID,
@@ -328,40 +358,45 @@ func (h *NotesHandler) CompleteReminder(c *gin.Context) {
 	noteID := c.Param("id")
 	remID := c.Param("rem_id")
 
-	note, err := h.mdStore.ReadNote(email, noteID)
-	if err != nil {
+	if err := storage.ValidateNoteID(noteID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
 		return
 	}
 
-	found := false
-	for i := range note.Reminders {
-		if note.Reminders[i].ID == remID {
-			note.Reminders[i].Status = "completed"
-			found = true
-			break
+	var updatedReminders []storage.Reminder
+	updatedNote, err := h.mdStore.MutateNoteAtomic(email, noteID, func(note *storage.Note) error {
+		found := false
+		for i := range note.Reminders {
+			if note.Reminders[i].ID == remID {
+				note.Reminders[i].Status = "completed"
+				found = true
+				break
+			}
 		}
-	}
+		if !found {
+			return errors.New("REMINDER_NOT_FOUND")
+		}
+		updatedReminders = note.Reminders
+		return nil
+	}, h.cfg.Location)
 
-	if !found {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "REMINDER_NOT_FOUND", "message": "待办提醒项不存在"}})
-		return
-	}
-
-	note.UpdatedAt = time.Now().In(h.cfg.Location).Format(time.RFC3339)
-	if err := h.mdStore.WriteNoteAtomic(email, note); err != nil {
+	if err != nil {
+		if err.Error() == "REMINDER_NOT_FOUND" {
+			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "REMINDER_NOT_FOUND", "message": "待办提醒项不存在"}})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "STORAGE_ERROR", "message": err.Error()}})
 		return
 	}
 
 	if idx, err := h.indexMgr.GetUserIndex(email); err == nil {
-		_ = idx.IndexNote(note, h.cfg.Location)
+		_ = idx.IndexNote(updatedNote, h.cfg.Location)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":   "待办已标记完成",
 		"note_id":   noteID,
 		"rem_id":    remID,
-		"reminders": note.Reminders,
+		"reminders": updatedReminders,
 	})
 }
