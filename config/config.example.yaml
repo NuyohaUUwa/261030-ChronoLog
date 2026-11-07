@@ -1,5 +1,12 @@
 server:
   address: "127.0.0.1:8080"
+  allowed_origins:
+    - "http://127.0.0.1:5173"
+    - "http://localhost:5173"
+    - "http://127.0.0.1:8080"
+    - "http://localhost:8080"
+    - "https://chronolog.uufang.space"
+    - "capacitor://localhost"
 
 storage:
   data_dir: "data-dev"
@@ -16,14 +23,20 @@ auth:
 
 ai:
   mode: "mock" # mock | remote
-  base_url: "http://127.0.0.1:3000/v1"
+  # 支持 OpenAI / DeepSeek 等兼容接口：
+  # OpenAI: base_url: "https://api.openai.com/v1", model: "gpt-4o-mini"
+  # DeepSeek: base_url: "https://api.deepseek.com/v1", model: "deepseek-chat"
+  base_url: "https://api.deepseek.com/v1"
   api_key: ""
-  model: ""
+  model: "deepseek-chat"
   timeout_seconds: 30
 
 notifications:
   mode: "mock" # mock | remote
+  channel: "bark" # bark | ntfy (优先支持单一实用渠道 Bark 或 Ntfy)
+  bark_server: "https://api.day.app" # Bark 服务端地址（默认官方节点）
   ntfy_server: "https://ntfy.sh"
+  app_base_url: "https://chronolog.uufang.space" # 用于通知推送的直达深链基地址
   check_interval_seconds: 60
 
 prompts:

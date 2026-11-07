@@ -72,13 +72,18 @@ func main() {
 	// 5. 初始化通知派发器与定时轮询调度器
 	var notificationSender scheduler.NotificationSender
 	if cfg.Notifications.Mode == "remote" {
-		notificationSender = scheduler.NewNtfySender(cfg.Notifications.NtfyServer)
+		if cfg.Notifications.Channel == "bark" {
+			notificationSender = scheduler.NewBarkSender(cfg.Notifications.BarkServer)
+		} else {
+			notificationSender = scheduler.NewNtfySender(cfg.Notifications.NtfyServer)
+		}
 	} else {
 		notificationSender = &scheduler.MockSender{}
 	}
 
 	cronScheduler := scheduler.NewScheduler(
 		cfg.Storage.DataDir,
+		cfg.Notifications.AppBaseURL,
 		mdStore,
 		indexMgr,
 		accountStore,
@@ -96,14 +101,32 @@ func main() {
 	r.Use(gin.Logger())
 	r.Use(func(c *gin.Context) { c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20); c.Next() })
 
-	// CORS 中间件（满足浏览器 Vite 调试及 Android WebView 跨域请求）
+	// CORS 中间件（受控白名单，杜绝任意 Origin 无条件回显）
+	allowedOrigins := cfg.Server.AllowedOrigins
+	allowedOriginMap := make(map[string]bool)
+	allowAll := false
+	for _, o := range allowedOrigins {
+		o = strings.TrimSpace(o)
+		if o == "*" {
+			allowAll = true
+		} else if o != "" {
+			allowedOriginMap[strings.ToLower(o)] = true
+		}
+	}
+
 	r.Use(func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
 		if origin != "" {
-			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
-			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+			isAllowed := allowAll || allowedOriginMap[strings.ToLower(origin)]
+			if isAllowed {
+				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+				c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+				c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+				c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+			} else if c.Request.Method == "OPTIONS" {
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
 		}
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -155,6 +178,7 @@ func main() {
 			authRequired.DELETE("/notes/:id", notesHandler.DeleteNote)
 			authRequired.POST("/notes/:id/retry", notesHandler.RetryNoteAI)
 			authRequired.POST("/notes/:id/reminders/:rem_id/complete", notesHandler.CompleteReminder)
+			authRequired.POST("/notes/:id/reminders/:rem_id/cancel", notesHandler.CancelReminder)
 
 			// 双模日历与标签
 			authRequired.GET("/calendar/summary", calendarHandler.GetSummary)

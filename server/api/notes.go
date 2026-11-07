@@ -418,3 +418,53 @@ func (h *NotesHandler) CompleteReminder(c *gin.Context) {
 		"reminders": updatedReminders,
 	})
 }
+
+// CancelReminder 取消单条待办提醒
+func (h *NotesHandler) CancelReminder(c *gin.Context) {
+	email := c.GetString("user_email")
+	noteID := c.Param("id")
+	remID := c.Param("rem_id")
+
+	if err := storage.ValidateNoteID(noteID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
+		return
+	}
+
+	var updatedReminders []storage.Reminder
+	updatedNote, err := h.mdStore.MutateNoteAtomic(email, noteID, func(note *storage.Note) error {
+		found := false
+		for i := range note.Reminders {
+			if note.Reminders[i].ID == remID {
+				note.Reminders[i].Status = "cancelled"
+				found = true
+				break
+			}
+		}
+		if !found {
+			return errors.New("REMINDER_NOT_FOUND")
+		}
+		updatedReminders = note.Reminders
+		note.UserEdited = true
+		return nil
+	}, h.cfg.Location)
+
+	if err != nil {
+		if err.Error() == "REMINDER_NOT_FOUND" {
+			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "REMINDER_NOT_FOUND", "message": "待办提醒项不存在"}})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "STORAGE_ERROR", "message": err.Error()}})
+		return
+	}
+
+	if idx, err := h.indexMgr.GetUserIndex(email); err == nil {
+		_ = idx.IndexNote(updatedNote, h.cfg.Location)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":   "待办已取消",
+		"note_id":   noteID,
+		"rem_id":    remID,
+		"reminders": updatedReminders,
+	})
+}

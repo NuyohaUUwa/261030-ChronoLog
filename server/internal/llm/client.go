@@ -200,6 +200,11 @@ type rawAIOutput struct {
 // ParseAIResponse 清理可能的 Markdown 围栏并解析纯 JSON 结果
 func ParseAIResponse(raw string) (*Result, error) {
 	cleaned := strings.TrimSpace(raw)
+	// 如果包含 <think>...</think> 思考过程标签（如 DeepSeek-R1 / 兼容推理模型），剔除思考过程保留最终 JSON
+	if idx := strings.Index(cleaned, "</think>"); idx != -1 {
+		cleaned = strings.TrimSpace(cleaned[idx+len("</think>"):])
+	}
+
 	// 去除可能携带的 ```json 或 ``` 围栏
 	if strings.HasPrefix(cleaned, "```") {
 		idx := strings.Index(cleaned, "\n")

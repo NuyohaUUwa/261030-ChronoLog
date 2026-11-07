@@ -37,7 +37,7 @@ npm run dev
 
 ## 验证与恢复
 
-server 目录运行 go test -count=1 -p 1 -tags dev ./...；web 目录运行 npm run build（包含类型检查）。登录、保存、刷新查看、跨账号隔离、AI 失败保留原稿是核心检查。手机端不重复整套后端验证。
+server 目录运行 go test -count=1 -p 1 -tags dev ./...；web 目录运行 npm run build（包含类型检查）。登录、保存、刷新查看、跨账号隔离、AI 失败保留原稿是核心检查。数据恢复实证运行 powershell -ExecutionPolicy Bypass -File scripts/verify-backup-restore.ps1。手机端不重复整套后端验证。
 
 启动时在接受请求前从 Markdown 重建所有账号索引，包括非空索引的外部修改和删除，再恢复 processing 任务。运行期间外部编辑不会实时监听；管理员可在停止业务写入后调用 POST /api/v1/system/rebuild-index 或重启服务同步。损坏的笔记不会被静默忽略后重建为空。
 

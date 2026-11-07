@@ -100,6 +100,7 @@ constraints: ""
 			authRequired.PUT("/notes/:id", notesHandler.UpdateNote)
 			authRequired.DELETE("/notes/:id", notesHandler.DeleteNote)
 			authRequired.POST("/notes/:id/reminders/:rem_id/complete", notesHandler.CompleteReminder)
+			authRequired.POST("/notes/:id/reminders/:rem_id/cancel", notesHandler.CancelReminder)
 			authRequired.GET("/calendar/summary", calendarHandler.GetSummary)
 
 			adminRequired := authRequired.Group("")
@@ -400,5 +401,95 @@ func TestAPI_RebuildIndexEndpoint(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("管理员触发重建索引接口失败: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAPI_ReminderCompleteAndCancel(t *testing.T) {
+	r, _, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// 注册用户
+	regBody, _ := json.Marshal(map[string]string{
+		"email":    "user_rem@example.com",
+		"password": "password123",
+	})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regBody))
+	r.ServeHTTP(w, req)
+	var regResp AuthResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &regResp)
+	token := regResp.Token
+
+	// 创建笔记
+	createBody, _ := json.Marshal(map[string]string{
+		"raw_content": "明天下午开会讨论方案",
+	})
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, "/api/v1/notes", bytes.NewReader(createBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	var createResp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &createResp)
+	noteID := createResp["id"]
+
+	// 等待并更新增加一条测试待办
+	time.Sleep(50 * time.Millisecond)
+	remID := "rem_test_1"
+	reminders := []storage.Reminder{
+		{
+			ID:                 remID,
+			Title:              "开会讨论方案",
+			RemindAt:           "2026-11-08T15:00:00+08:00",
+			Status:             "pending",
+			NotificationStatus: "pending",
+		},
+	}
+	updateBody, _ := json.Marshal(map[string]any{
+		"reminders": reminders,
+	})
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPut, "/api/v1/notes/"+noteID, bytes.NewReader(updateBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("更新笔记提醒失败: %d %s", w.Code, w.Body.String())
+	}
+
+	// 1. 标记完成
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/notes/%s/reminders/%s/complete", noteID, remID), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("标记提醒完成失败: %d %s", w.Code, w.Body.String())
+	}
+
+	// 2. 取消提醒
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/notes/%s/reminders/%s/cancel", noteID, remID), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("取消提醒失败: %d %s", w.Code, w.Body.String())
+	}
+
+	// 检查最终状态
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/v1/notes/"+noteID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	var noteObj storage.Note
+	_ = json.Unmarshal(w.Body.Bytes(), &noteObj)
+	if len(noteObj.Reminders) != 1 || noteObj.Reminders[0].Status != "cancelled" {
+		t.Fatalf("期望提醒状态为 cancelled, 得到: %+v", noteObj.Reminders)
+	}
+
+	// 3. 取消不存在的提醒应返回 404
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/notes/%s/reminders/non_existent/cancel", noteID), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("取消不存在的提醒期望 404, 得到 %d", w.Code)
 	}
 }

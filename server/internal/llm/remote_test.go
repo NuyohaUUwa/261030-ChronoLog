@@ -55,3 +55,31 @@ func TestRejectInvalidFields(t *testing.T) {
 		}
 	}
 }
+
+func TestDeepSeekThinkTagAndMultiLevelTags(t *testing.T) {
+	sample := `<think>
+用户想记录明天的会议，并加上多层级标签。
+</think>
+` + "```json\n" + `{
+  "polished_content": "### 方案讨论会\n- 明天下午开会讨论新架构。",
+  "tags": ["工作/项目/架构", "个人/待办"],
+  "reminders": [
+    {
+      "title": "方案讨论会",
+      "remind_at": "2026-11-08T15:00:00+08:00",
+      "reason": "用户提及明天下午开会"
+    }
+  ]
+}` + "\n```"
+
+	res, err := ParseAIResponse(sample)
+	if err != nil {
+		t.Fatalf("ParseAIResponse failed for DeepSeek sample: %v", err)
+	}
+	if len(res.Tags) != 2 || res.Tags[0] != "工作/项目/架构" {
+		t.Fatalf("unexpected tags: %+v", res.Tags)
+	}
+	if len(res.Reminders) != 1 || res.Reminders[0].Status != "pending" || res.Reminders[0].NotificationStatus != "pending" {
+		t.Fatalf("unexpected reminders: %+v", res.Reminders)
+	}
+}

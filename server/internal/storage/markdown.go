@@ -26,12 +26,13 @@ var (
 var noteIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
 type Reminder struct {
-	ID                 string `yaml:"id" json:"id"`
-	Title              string `yaml:"title" json:"title"`
-	RemindAt           string `yaml:"remind_at" json:"remind_at"`                     // 带时区偏移 RFC 3339
-	Status             string `yaml:"status" json:"status"`                           // pending | completed | cancelled
-	NotificationStatus string `yaml:"notification_status" json:"notification_status"` // pending | sent | failed
-	Reason             string `yaml:"reason,omitempty" json:"reason,omitempty"`
+	ID                  string `yaml:"id" json:"id"`
+	Title               string `yaml:"title" json:"title"`
+	RemindAt            string `yaml:"remind_at" json:"remind_at"` // 带时区偏移 RFC 3339
+	Status              string `yaml:"status" json:"status"`       // pending | completed | cancelled
+	NotificationStatus  string `yaml:"notification_status" json:"notification_status"` // pending | sent | failed
+	NotificationRetries int    `yaml:"notification_retries,omitempty" json:"notification_retries,omitempty"`
+	Reason              string `yaml:"reason,omitempty" json:"reason,omitempty"`
 }
 
 type NoteFrontMatter struct {

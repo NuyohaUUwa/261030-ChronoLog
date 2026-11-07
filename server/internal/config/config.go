@@ -26,7 +26,8 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Address string `yaml:"address"`
+	Address        string   `yaml:"address"`
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
 type StorageConfig struct {
@@ -53,9 +54,12 @@ type AIConfig struct {
 }
 
 type NotificationsConfig struct {
-	Mode                 string `yaml:"mode"` // mock | remote
+	Mode                 string `yaml:"mode"`    // mock | remote
+	Channel              string `yaml:"channel"` // bark | ntfy
 	NtfyServer           string `yaml:"ntfy_server"`
+	BarkServer           string `yaml:"bark_server"`
 	CheckIntervalSeconds int    `yaml:"check_interval_seconds"`
+	AppBaseURL           string `yaml:"app_base_url"`
 }
 
 type PromptsConfig struct {
@@ -67,6 +71,16 @@ func LoadConfig() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
 			Address: "127.0.0.1:8080",
+			AllowedOrigins: []string{
+				"http://127.0.0.1:5173",
+				"http://localhost:5173",
+				"http://127.0.0.1:8080",
+				"http://localhost:8080",
+				"https://chronolog.uufang.space",
+				"http://localhost",
+				"https://localhost",
+				"capacitor://localhost",
+			},
 		},
 		Storage: StorageConfig{
 			DataDir: "data-dev",
@@ -85,8 +99,11 @@ func LoadConfig() (*Config, error) {
 		},
 		Notifications: NotificationsConfig{
 			Mode:                 "mock",
+			Channel:              "bark",
 			NtfyServer:           "https://ntfy.sh",
+			BarkServer:           "https://api.day.app",
 			CheckIntervalSeconds: 60,
+			AppBaseURL:           "https://chronolog.uufang.space",
 		},
 		Prompts: PromptsConfig{
 			File: "config/prompts.local.yaml",
@@ -126,6 +143,9 @@ func LoadConfig() (*Config, error) {
 	if val := os.Getenv("HTTP_ADDR"); val != "" {
 		cfg.Server.Address = val
 	}
+	if val := os.Getenv("ALLOWED_ORIGINS"); val != "" {
+		cfg.Server.AllowedOrigins = parseCommaSeparated(val)
+	}
 	if val := os.Getenv("DATA_DIR"); val != "" {
 		cfg.Storage.DataDir = val
 	}
@@ -156,6 +176,18 @@ func LoadConfig() (*Config, error) {
 	if val := os.Getenv("NOTIFICATION_MODE"); val != "" {
 		cfg.Notifications.Mode = strings.ToLower(val)
 	}
+	if val := os.Getenv("NOTIFICATION_CHANNEL"); val != "" {
+		cfg.Notifications.Channel = strings.ToLower(val)
+	}
+	if val := os.Getenv("BARK_SERVER"); val != "" {
+		cfg.Notifications.BarkServer = val
+	}
+	if val := os.Getenv("NTFY_SERVER"); val != "" {
+		cfg.Notifications.NtfyServer = val
+	}
+	if val := os.Getenv("APP_BASE_URL"); val != "" {
+		cfg.Notifications.AppBaseURL = val
+	}
 	if val := os.Getenv("PROMPTS_FILE"); val != "" {
 		cfg.Prompts.File = val
 	}
@@ -171,11 +203,18 @@ func LoadConfig() (*Config, error) {
 	// 时区加载
 	cfg.AI.Mode = strings.ToLower(strings.TrimSpace(cfg.AI.Mode))
 	cfg.Notifications.Mode = strings.ToLower(strings.TrimSpace(cfg.Notifications.Mode))
+	cfg.Notifications.Channel = strings.ToLower(strings.TrimSpace(cfg.Notifications.Channel))
+	if cfg.Notifications.Channel == "" {
+		cfg.Notifications.Channel = "bark"
+	}
 	if cfg.AI.Mode != "mock" && cfg.AI.Mode != "remote" {
 		return nil, fmt.Errorf("AI_MODE 必须是 mock 或 remote")
 	}
 	if cfg.Notifications.Mode != "mock" && cfg.Notifications.Mode != "remote" {
 		return nil, fmt.Errorf("NOTIFICATION_MODE 必须是 mock 或 remote")
+	}
+	if cfg.Notifications.Channel != "bark" && cfg.Notifications.Channel != "ntfy" {
+		return nil, fmt.Errorf("NOTIFICATION_CHANNEL 必须是 bark 或 ntfy")
 	}
 	if cfg.AI.TimeoutSeconds <= 0 {
 		return nil, fmt.Errorf("AI 超时必须大于零")
