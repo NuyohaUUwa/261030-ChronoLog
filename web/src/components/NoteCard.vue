@@ -1,5 +1,8 @@
 <template>
-  <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+  <div
+    :id="'note-' + note.id"
+    class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-all duration-300 overflow-hidden"
+  >
     <!-- 卡片头部元数据 -->
     <div class="px-5 py-3.5 bg-slate-50/60 border-b border-slate-100 flex items-center justify-between flex-wrap gap-2">
       <div class="flex items-center space-x-2 text-xs text-slate-500 font-medium">
@@ -8,7 +11,7 @@
       </div>
 
       <div class="flex items-center space-x-2">
-        <!-- 提醒徽标 -->
+        <!-- 提醒徽标与一键完成/取消 (W02) -->
         <template v-for="rem in note.reminders" :key="rem.id">
           <div
             v-if="rem.status === 'pending'"
@@ -20,19 +23,45 @@
             <button
               @click.stop="handleCompleteReminder(rem.id)"
               title="点击标记完成"
-              class="ml-1 hover:text-emerald-600 transition-colors"
+              class="ml-1 text-slate-400 hover:text-emerald-600 transition-colors"
             >
               <CheckCircle class="w-3.5 h-3.5" />
+            </button>
+            <button
+              @click.stop="handleCancelReminder(rem.id)"
+              title="点击取消待办"
+              class="text-slate-400 hover:text-red-500 transition-colors"
+            >
+              <XCircle class="w-3.5 h-3.5" />
             </button>
           </div>
           <div
             v-else-if="rem.status === 'completed'"
             class="flex items-center space-x-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-400 line-through"
+            title="已完成"
           >
             <Check class="w-3 h-3 text-emerald-500" />
             <span>{{ rem.title }}</span>
           </div>
+          <div
+            v-else-if="rem.status === 'cancelled'"
+            class="flex items-center space-x-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-400 line-through opacity-75"
+            title="已取消"
+          >
+            <Ban class="w-3 h-3 text-slate-400" />
+            <span>{{ rem.title }} (已取消)</span>
+          </div>
         </template>
+
+        <!-- 编辑正文与标签操作 (W01) -->
+        <button
+          v-if="!isEditing"
+          @click.stop="startEdit"
+          title="二次编辑正文与标签"
+          class="p-1 text-slate-400 hover:text-brand-600 rounded transition-colors"
+        >
+          <Pencil class="w-3.5 h-3.5" />
+        </button>
 
         <!-- 删除操作 -->
         <button
@@ -45,8 +74,49 @@
       </div>
     </div>
 
-    <!-- 卡片主体正文 -->
-    <div class="p-5">
+    <!-- 卡片主体正文：二次编辑表单 (W01) -->
+    <div v-if="isEditing" class="p-5 space-y-3 bg-slate-50/30">
+      <div v-if="editError" class="px-3 py-1.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-600">
+        {{ editError }}
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">正文内容 (支持 Markdown)</label>
+        <textarea
+          v-model="editContent"
+          rows="5"
+          class="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 outline-none transition-all resize-y leading-relaxed"
+          placeholder="输入笔记正文..."
+        ></textarea>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">标签分类 (逗号或空格分隔，如：工作/方案, 会议)</label>
+        <input
+          v-model="editTagsStr"
+          type="text"
+          class="w-full px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-700 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 outline-none transition-all"
+          placeholder="标签分类..."
+        />
+      </div>
+      <div class="flex items-center justify-end space-x-2 pt-2">
+        <button
+          @click="cancelEdit"
+          :disabled="saving"
+          class="px-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-600 hover:bg-slate-100 transition-colors"
+        >
+          取消
+        </button>
+        <button
+          @click="saveEdit"
+          :disabled="saving"
+          class="px-4 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-xs font-medium disabled:opacity-50 transition-colors shadow-sm"
+        >
+          {{ saving ? '保存中...' : '保存修改' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- 卡片主体正文：常规展示模式 -->
+    <div v-else class="p-5">
       <!-- AI 状态展示 -->
       <div v-if="note.processing_status === 'processing'" class="mb-3 flex items-center space-x-2 text-xs text-brand-600 bg-brand-50/80 px-3 py-1.5 rounded-lg border border-brand-200/50">
         <Sparkles class="w-3.5 h-3.5 animate-spin" />
@@ -123,7 +193,23 @@
 import { ref, computed } from 'vue';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import { Clock, Bell, CheckCircle, Check, Trash2, Sparkles, AlertCircle, RotateCcw, Tag, Eye, ChevronDown, FileText } from 'lucide-vue-next';
+import {
+  Clock,
+  Bell,
+  CheckCircle,
+  Check,
+  Trash2,
+  Sparkles,
+  AlertCircle,
+  RotateCcw,
+  Tag,
+  Eye,
+  ChevronDown,
+  FileText,
+  Pencil,
+  XCircle,
+  Ban,
+} from 'lucide-vue-next';
 import { Note } from '../api/client';
 import { useNotesStore } from '../stores/notes';
 
@@ -133,6 +219,52 @@ const props = defineProps<{
 
 const notesStore = useNotesStore();
 const showRaw = ref(false);
+
+// 二次编辑状态 (W01)
+const isEditing = ref(false);
+const editContent = ref('');
+const editTagsStr = ref('');
+const saving = ref(false);
+const editError = ref('');
+
+function startEdit() {
+  editContent.value = props.note.polished_content || props.note.raw_content;
+  editTagsStr.value = (props.note.tags || []).join(', ');
+  editError.value = '';
+  isEditing.value = true;
+}
+
+function cancelEdit() {
+  isEditing.value = false;
+  editError.value = '';
+}
+
+async function saveEdit() {
+  saving.value = true;
+  editError.value = '';
+  try {
+    const rawTags = editTagsStr.value
+      .split(/[,，\s]+/)
+      .map((t) => t.trim().replace(/^#/, ''))
+      .filter((t) => t.length > 0);
+    const uniqueTags = Array.from(new Set(rawTags));
+    await notesStore.updateNote(
+      props.note.id,
+      editContent.value,
+      uniqueTags,
+      props.note.updated_at
+    );
+    isEditing.value = false;
+  } catch (err: any) {
+    if (err.response?.status === 409) {
+      editError.value = '笔记已被并发修改，请刷新页面后重新编辑';
+    } else {
+      editError.value = err.response?.data?.error?.message || '保存修改失败，请重试';
+    }
+  } finally {
+    saving.value = false;
+  }
+}
 
 const renderedPolishedContent = computed(() => {
   if (!props.note.polished_content) return '';
@@ -189,6 +321,10 @@ function handleTagClick(tag: string) {
 
 function handleCompleteReminder(remId: string) {
   notesStore.completeReminder(props.note.id, remId);
+}
+
+function handleCancelReminder(remId: string) {
+  notesStore.cancelReminder(props.note.id, remId);
 }
 
 function handleDelete() {

@@ -46,8 +46,8 @@
         </div>
 
         <div class="p-3 bg-slate-50 rounded-xl text-[11px] text-slate-500 space-y-1">
-          <div>订阅主题: <code class="font-mono text-brand-600">{{ ntfyTopic }}</code></div>
-          <div>通知服务地址由服务器配置；通知点击定位笔记功能尚未实现。</div>
+          <div>订阅主题/设备: <code class="font-mono text-brand-600">{{ ntfyTopic }}</code></div>
+          <div>通知服务地址由服务器配置；支持通知点击深链直达并高亮定位笔记。</div>
         </div>
       </div>
     </div>

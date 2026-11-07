@@ -105,6 +105,9 @@ export default {
   completeReminder(noteId: string, remId: string) {
     return apiClient.post(`/notes/${noteId}/reminders/${remId}/complete`);
   },
+  cancelReminder(noteId: string, remId: string) {
+    return apiClient.post(`/notes/${noteId}/reminders/${remId}/cancel`);
+  },
 
   // 日历与标签
   getCalendarSummary(year?: number, month?: number) {

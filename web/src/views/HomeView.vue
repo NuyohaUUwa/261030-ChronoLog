@@ -146,8 +146,10 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, nextTick } from 'vue';
+import { useRoute } from 'vue-router';
 import { Tag as TagIcon, Filter, Sparkles, ShieldCheck, AlertTriangle, RotateCcw } from 'lucide-vue-next';
+import api from '../api/client';
 import { useNotesStore } from '../stores/notes';
 import { useCalendarStore } from '../stores/calendar';
 import { useAuthStore } from '../stores/auth';
@@ -157,13 +159,43 @@ import NoteCard from '../components/NoteCard.vue';
 import TagFilterBar from '../components/TagFilterBar.vue';
 import PromptTester from '../components/PromptTester.vue';
 
+const route = useRoute();
 const notesStore = useNotesStore();
 const calendarStore = useCalendarStore();
 const authStore = useAuthStore();
 
-onMounted(() => {
-  notesStore.fetchNotes();
+onMounted(async () => {
+  await notesStore.fetchNotes();
   calendarStore.fetchTags();
+
+  // 基础通知深链直达 (W03)
+  const targetNoteId = (route.query.note_id as string) || '';
+  if (targetNoteId) {
+    let exists = notesStore.notes.some((n) => n.id === targetNoteId);
+    if (!exists) {
+      try {
+        const res = await api.getNote(targetNoteId);
+        if (res.data) {
+          notesStore.notes.unshift(res.data);
+          exists = true;
+        }
+      } catch (err) {
+        console.warn('深链指定笔记获取失败:', err);
+      }
+    }
+    if (exists) {
+      nextTick(() => {
+        const el = document.getElementById(`note-${targetNoteId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('ring-2', 'ring-brand-500', 'bg-brand-50/30');
+          setTimeout(() => {
+            el.classList.remove('ring-2', 'ring-brand-500', 'bg-brand-50/30');
+          }, 3000);
+        }
+      });
+    }
+  }
 });
 
 function toggleTag(tag: string) {

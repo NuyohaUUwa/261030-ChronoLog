@@ -192,6 +192,42 @@ export const useNotesStore = defineStore('notes', {
       calendarStore.fetchSummary();
     },
 
+    async cancelReminder(noteId: string, remId: string) {
+      await api.cancelReminder(noteId, remId);
+      const note = this.notes.find((n) => n.id === noteId);
+      if (note) {
+        const rem = note.reminders.find((r) => r.id === remId);
+        if (rem) {
+          rem.status = 'cancelled';
+        }
+      }
+
+      // 联动刷新日历提醒圆点
+      const calendarStore = useCalendarStore();
+      calendarStore.fetchSummary();
+    },
+
+    async updateNote(id: string, polishedContent: string, tags: string[], updatedAt: string) {
+      const res = await api.updateNote(id, {
+        polished_content: polishedContent,
+        tags: tags,
+        updated_at: updatedAt,
+      });
+      const updated = res.data;
+      const idx = this.notes.findIndex((n) => n.id === id);
+      if (idx !== -1) {
+        this.notes[idx] = updated;
+      }
+      if (this.selectedNote?.id === id) {
+        this.selectedNote = updated;
+      }
+      // 联动刷新日历与标签
+      const calendarStore = useCalendarStore();
+      calendarStore.fetchSummary();
+      calendarStore.fetchTags();
+      return updated;
+    },
+
     setSelectedDate(date: string) {
       this.selectedDate = date;
       this.page = 1;
