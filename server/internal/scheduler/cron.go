@@ -23,8 +23,8 @@ type NotificationSender interface {
 type MockSender struct{}
 
 func (m *MockSender) Send(ctx context.Context, topic, title, body, clickURL string) error {
-	// 脱敏日志：严禁在控制台打印用户提醒或笔记正文 (PT-07)
-	log.Printf("[Mock Notification] 发送给主题/设备 %s | 标题: %s | 点击链接: %s", topic, title, clickURL)
+	// 脱敏日志：严禁在控制台打印用户提醒正文及设备密钥/主题 (PT-07, R3-01)
+	log.Printf("[Mock Notification] 标题: %s | 点击链接: %s", title, clickURL)
 	return nil
 }
 
@@ -74,7 +74,11 @@ func (b *BarkSender) Send(ctx context.Context, topic, title, body, clickURL stri
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// 脱敏：绝不直接向上层暴露包含 device_key 的底层 URL 请求错误 (R3-01)
+		return errors.New("bark 请求失败 (网络连接异常或请求超时)")
 	}
 	defer resp.Body.Close()
 

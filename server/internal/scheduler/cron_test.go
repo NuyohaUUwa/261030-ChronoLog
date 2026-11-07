@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +42,19 @@ func TestBarkSender(t *testing.T) {
 	}
 	if received.Title != "测试标题" || received.Body != "测试内容" || received.URL != "https://chronolog.uufang.space/?note_id=123" || received.Group != "ChronoLog" {
 		t.Errorf("unexpected payload: %+v", received)
+	}
+}
+
+func TestBarkSender_SanitizedErrorOnFailure(t *testing.T) {
+	// 指向一个无响应端口以模拟网络故障，验证绝不泄露 secretKey (R3-01)
+	sender := NewBarkSender("http://127.0.0.1:59999")
+	secretKey := "super_secret_device_canary_key"
+	err := sender.Send(context.Background(), secretKey, "title", "body", "")
+	if err == nil {
+		t.Fatal("expected error on connection failure, got nil")
+	}
+	if strings.Contains(err.Error(), secretKey) {
+		t.Fatalf("BarkSender error leaked secret device key: %v", err)
 	}
 }
 

@@ -61,7 +61,8 @@ apiClient.interceptors.response.use(
       localStorage.removeItem('user_email');
       localStorage.removeItem('is_admin');
       if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
+        const redirectPath = window.location.pathname + window.location.search;
+        window.location.href = `/login?redirect=${encodeURIComponent(redirectPath)}`;
       }
     }
     return Promise.reject(error);
@@ -103,10 +104,10 @@ export default {
     return apiClient.post<{ id: string; status: string }>(`/notes/${id}/retry`);
   },
   completeReminder(noteId: string, remId: string) {
-    return apiClient.post(`/notes/${noteId}/reminders/${remId}/complete`);
+    return apiClient.post<{ message: string; note_id: string; rem_id: string; updated_at: string; reminders: Reminder[] }>(`/notes/${noteId}/reminders/${remId}/complete`);
   },
   cancelReminder(noteId: string, remId: string) {
-    return apiClient.post(`/notes/${noteId}/reminders/${remId}/cancel`);
+    return apiClient.post<{ message: string; note_id: string; rem_id: string; updated_at: string; reminders: Reminder[] }>(`/notes/${noteId}/reminders/${remId}/cancel`);
   },
 
   // 日历与标签

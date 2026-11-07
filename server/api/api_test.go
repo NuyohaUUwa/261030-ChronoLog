@@ -472,6 +472,25 @@ func TestAPI_ReminderCompleteAndCancel(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("取消提醒失败: %d %s", w.Code, w.Body.String())
 	}
+	var cancelResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &cancelResp)
+	if cancelResp["updated_at"] == nil || cancelResp["updated_at"] == "" {
+		t.Fatalf("取消待办响应缺少 updated_at: %s", w.Body.String())
+	}
+	latestUpdatedAt := cancelResp["updated_at"].(string)
+
+	// 使用取消待办后取得的 latestUpdatedAt 进行正文编辑，验证不会产生 409 冲突 (R3-02)
+	editBody, _ := json.Marshal(map[string]any{
+		"polished_content": "更新后的正文",
+		"updated_at":       latestUpdatedAt,
+	})
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPut, "/api/v1/notes/"+noteID, bytes.NewReader(editBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("使用同步后的版本保存编辑失败: %d %s", w.Code, w.Body.String())
+	}
 
 	// 检查最终状态
 	w = httptest.NewRecorder()

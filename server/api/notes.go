@@ -412,10 +412,11 @@ func (h *NotesHandler) CompleteReminder(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":   "待办已标记完成",
-		"note_id":   noteID,
-		"rem_id":    remID,
-		"reminders": updatedReminders,
+		"message":    "待办已标记完成",
+		"note_id":    noteID,
+		"rem_id":     remID,
+		"updated_at": updatedNote.UpdatedAt,
+		"reminders":  updatedReminders,
 	})
 }
 
@@ -462,9 +463,10 @@ func (h *NotesHandler) CancelReminder(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":   "待办已取消",
-		"note_id":   noteID,
-		"rem_id":    remID,
-		"reminders": updatedReminders,
+		"message":    "待办已取消",
+		"note_id":    noteID,
+		"rem_id":     remID,
+		"updated_at": updatedNote.UpdatedAt,
+		"reminders":  updatedReminders,
 	})
 }

@@ -96,11 +96,12 @@
 
 <script setup lang="ts">
 import { ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRouter, useRoute } from 'vue-router';
 import { Clock, Mail, Lock, AlertCircle, ArrowRight, ShieldCheck } from 'lucide-vue-next';
 import { useAuthStore } from '../stores/auth';
 
 const router = useRouter();
+const route = useRoute();
 const authStore = useAuthStore();
 
 const isRegister = ref(false);
@@ -117,7 +118,13 @@ async function handleSubmit() {
     } else {
       await authStore.login(email.value, password.value);
     }
-    router.push('/');
+    const redirect = (route.query.redirect as string) || '';
+    // 严格安全校验：必须为以单个 / 开头且非 // 或包含 \ 的站内相对路径，防止开放重定向漏洞 (R3-04)
+    if (redirect && redirect.startsWith('/') && !redirect.startsWith('//') && !redirect.includes('\\')) {
+      router.push(redirect);
+    } else {
+      router.push('/');
+    }
   } catch (err: unknown) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     errorMsg.value = (err as any)?.response?.data?.error?.message || '请求失败，请稍后重试';

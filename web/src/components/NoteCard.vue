@@ -220,16 +220,18 @@ const props = defineProps<{
 const notesStore = useNotesStore();
 const showRaw = ref(false);
 
-// 二次编辑状态 (W01)
+// 二次编辑状态 (W01, R3-03)
 const isEditing = ref(false);
 const editContent = ref('');
 const editTagsStr = ref('');
+const draftBaseUpdatedAt = ref('');
 const saving = ref(false);
 const editError = ref('');
 
 function startEdit() {
   editContent.value = props.note.polished_content || props.note.raw_content;
   editTagsStr.value = (props.note.tags || []).join(', ');
+  draftBaseUpdatedAt.value = props.note.updated_at; // 冻结进入编辑时的基线版本快照 (R3-03)
   editError.value = '';
   isEditing.value = true;
 }
@@ -252,12 +254,12 @@ async function saveEdit() {
       props.note.id,
       editContent.value,
       uniqueTags,
-      props.note.updated_at
+      draftBaseUpdatedAt.value // 使用进入编辑时的快照版本，防并发覆盖 (R3-03)
     );
     isEditing.value = false;
   } catch (err: any) {
     if (err.response?.status === 409) {
-      editError.value = '笔记已被并发修改，请刷新页面后重新编辑';
+      editError.value = '笔记已被后台或其他修改，草稿已妥善留存，请确认后重试';
     } else {
       editError.value = err.response?.data?.error?.message || '保存修改失败，请重试';
     }

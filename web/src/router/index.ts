@@ -48,9 +48,14 @@ const router = createRouter({
 router.beforeEach((to, _from, next) => {
   const token = localStorage.getItem('token');
   if (to.meta.requiresAuth && !token) {
-    next('/login');
+    next({ path: '/login', query: { redirect: to.fullPath } });
   } else if (to.meta.guestOnly && token) {
-    next('/');
+    const redirect = (to.query.redirect as string) || '';
+    if (redirect && redirect.startsWith('/') && !redirect.startsWith('//') && !redirect.includes('\\')) {
+      next(redirect);
+    } else {
+      next('/');
+    }
   } else {
     next();
   }

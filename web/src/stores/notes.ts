@@ -178,12 +178,19 @@ export const useNotesStore = defineStore('notes', {
     },
 
     async completeReminder(noteId: string, remId: string) {
-      await api.completeReminder(noteId, remId);
+      const res = await api.completeReminder(noteId, remId);
       const note = this.notes.find((n) => n.id === noteId);
       if (note) {
-        const rem = note.reminders.find((r) => r.id === remId);
-        if (rem) {
-          rem.status = 'completed';
+        if (res.data?.updated_at) {
+          note.updated_at = res.data.updated_at;
+        }
+        if (res.data?.reminders) {
+          note.reminders = res.data.reminders;
+        } else {
+          const rem = note.reminders.find((r) => r.id === remId);
+          if (rem) {
+            rem.status = 'completed';
+          }
         }
       }
 
@@ -193,12 +200,19 @@ export const useNotesStore = defineStore('notes', {
     },
 
     async cancelReminder(noteId: string, remId: string) {
-      await api.cancelReminder(noteId, remId);
+      const res = await api.cancelReminder(noteId, remId);
       const note = this.notes.find((n) => n.id === noteId);
       if (note) {
-        const rem = note.reminders.find((r) => r.id === remId);
-        if (rem) {
-          rem.status = 'cancelled';
+        if (res.data?.updated_at) {
+          note.updated_at = res.data.updated_at;
+        }
+        if (res.data?.reminders) {
+          note.reminders = res.data.reminders;
+        } else {
+          const rem = note.reminders.find((r) => r.id === remId);
+          if (rem) {
+            rem.status = 'cancelled';
+          }
         }
       }
 
