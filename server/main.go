@@ -61,13 +61,14 @@ func main() {
 		log.Fatalf("初始化提示词引擎失败: %v", err)
 	}
 
-	// 4. 初始化 AI 客户端
-	var llmClient llm.Client
+	// 4. 初始化 AI 客户端（支持动态热切换）
+	var baseLLMClient llm.Client
 	if cfg.AI.Mode == "remote" {
-		llmClient = llm.NewRemoteClient(cfg.AI.BaseURL, cfg.AI.APIKey, cfg.AI.Model, time.Duration(cfg.AI.TimeoutSeconds)*time.Second)
+		baseLLMClient = llm.NewRemoteClient(cfg.AI.BaseURL, cfg.AI.APIKey, cfg.AI.Model, time.Duration(cfg.AI.TimeoutSeconds)*time.Second)
 	} else {
-		llmClient = llm.NewMockClient()
+		baseLLMClient = llm.NewMockClient()
 	}
+	dynamicLLMClient := llm.NewDynamicClient(baseLLMClient)
 
 	// 5. 初始化通知派发器与定时轮询调度器
 	var notificationSender scheduler.NotificationSender
@@ -137,10 +138,10 @@ func main() {
 
 	// 初始化 API 处理器
 	authHandler := api.NewAuthHandler(cfg, accountStore)
-	notesHandler := api.NewNotesHandler(cfg, mdStore, indexMgr, llmClient, promptMgr)
+	notesHandler := api.NewNotesHandler(cfg, mdStore, indexMgr, dynamicLLMClient, promptMgr)
 	calendarHandler := api.NewCalendarHandler(cfg, indexMgr)
-	promptsHandler := api.NewPromptsHandler(cfg, promptMgr, llmClient, indexMgr)
-	systemHandler := api.NewSystemHandler(cfg, accountStore, mdStore, indexMgr)
+	promptsHandler := api.NewPromptsHandler(cfg, promptMgr, dynamicLLMClient, indexMgr)
+	systemHandler := api.NewSystemHandler(cfg, accountStore, mdStore, indexMgr, dynamicLLMClient)
 
 	// 启动后台自愈检查（索引完整性校验与未决 AI 任务重试）
 	runStartupRecovery(cfg, accountStore, mdStore, indexMgr, notesHandler)
@@ -179,6 +180,7 @@ func main() {
 			authRequired.POST("/notes/:id/retry", notesHandler.RetryNoteAI)
 			authRequired.POST("/notes/:id/reminders/:rem_id/complete", notesHandler.CompleteReminder)
 			authRequired.POST("/notes/:id/reminders/:rem_id/cancel", notesHandler.CancelReminder)
+			authRequired.POST("/notes/:id/reminders/:rem_id/reopen", notesHandler.ReopenReminder)
 
 			// 双模日历与标签
 			authRequired.GET("/calendar/summary", calendarHandler.GetSummary)
@@ -192,6 +194,9 @@ func main() {
 				adminRequired.PUT("/prompts", promptsHandler.UpdatePrompts)
 				adminRequired.POST("/prompts/test", promptsHandler.TestPrompt)
 				adminRequired.POST("/system/rebuild-index", systemHandler.RebuildIndex)
+				adminRequired.GET("/system/ai-config", systemHandler.GetAIConfig)
+				adminRequired.PUT("/system/ai-config", systemHandler.UpdateAIConfig)
+				adminRequired.POST("/system/ai-config/test", systemHandler.TestAIConfig)
 			}
 		}
 	}

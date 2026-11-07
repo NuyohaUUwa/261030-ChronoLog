@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"chronolog/server/internal/storage"
@@ -58,6 +59,29 @@ func (m *MockClient) ProcessNote(ctx context.Context, payload *PromptPayload) (*
 	}, nil
 }
 
+// DynamicClient 支持并发安全地热切换底层的 Client 实例
+type DynamicClient struct {
+	mu     sync.RWMutex
+	client Client
+}
+
+func NewDynamicClient(initial Client) *DynamicClient {
+	return &DynamicClient{client: initial}
+}
+
+func (d *DynamicClient) Switch(newClient Client) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.client = newClient
+}
+
+func (d *DynamicClient) ProcessNote(ctx context.Context, payload *PromptPayload) (*Result, error) {
+	d.mu.RLock()
+	c := d.client
+	d.mu.RUnlock()
+	return c.ProcessNote(ctx, payload)
+}
+
 // RemoteClient 调用符合 OpenAI 协议的远程大模型服务
 type RemoteClient struct {
 	baseURL    string
@@ -86,7 +110,7 @@ func NewRemoteClient(baseURL, apiKey, model string, timeout time.Duration) *Remo
 type chatCompletionRequest struct {
 	Model       string        `json:"model"`
 	Messages    []ChatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
+	Temperature *float64      `json:"temperature,omitempty"`
 	MaxTokens   int           `json:"max_tokens,omitempty"`
 }
 
@@ -99,6 +123,14 @@ type chatCompletionResponse struct {
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+func isReasoningModel(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.Contains(lower, "flash") ||
+		strings.Contains(lower, "reasoner") ||
+		strings.HasPrefix(lower, "o1") ||
+		strings.HasPrefix(lower, "o3")
 }
 
 func (r *RemoteClient) ProcessNote(ctx context.Context, payload *PromptPayload) (*Result, error) {
@@ -115,9 +147,10 @@ func (r *RemoteClient) ProcessNote(ctx context.Context, payload *PromptPayload) 
 	messages = append(messages, payload.FewShotMessages...)
 	messages = append(messages, ChatMessage{Role: "user", Content: payload.UserPrompt})
 
-	temp := payload.Temperature
-	if temp < 0 || temp > 2 {
-		temp = 0.2
+	var tempPtr *float64
+	if !isReasoningModel(r.model) && payload.Temperature > 0 && payload.Temperature <= 2 {
+		temp := payload.Temperature
+		tempPtr = &temp
 	}
 	maxTokens := payload.MaxTokens
 	if maxTokens <= 0 {
@@ -127,7 +160,7 @@ func (r *RemoteClient) ProcessNote(ctx context.Context, payload *PromptPayload) 
 	reqBody := chatCompletionRequest{
 		Model:       r.model,
 		Messages:    messages,
-		Temperature: temp,
+		Temperature: tempPtr,
 		MaxTokens:   maxTokens,
 	}
 
@@ -137,54 +170,76 @@ func (r *RemoteClient) ProcessNote(ctx context.Context, payload *PromptPayload) 
 	}
 
 	url := fmt.Sprintf("%s/chat/completions", r.baseURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("创建 HTTP 请求失败: %w", err)
-	}
 
-	req.Header.Set("Content-Type", "application/json")
-	if r.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+r.apiKey)
-	}
-
-	resp, err := r.httpClient.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt*500) * time.Millisecond):
+			}
 		}
-		return nil, errors.New("请求 AI 服务失败")
-	}
-	defer resp.Body.Close()
 
-	// 限制最多读取 1MB 响应内容，防止大响应耗尽内存
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
-	if err != nil {
-		return nil, errors.New("读取 AI 响应失败")
-	}
-	if len(bodyBytes) > 1<<20 {
-		return nil, errors.New("AI 响应超过大小限制")
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("创建 HTTP 请求失败: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		if r.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+r.apiKey)
+		}
+
+		resp, err := r.httpClient.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			lastErr = errors.New("请求 AI 服务失败")
+			continue
+		}
+
+		// 限制最多读取 1MB 响应内容，防止大响应耗尽内存
+		bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+		resp.Body.Close()
+		if err != nil {
+			lastErr = errors.New("读取 AI 响应失败")
+			continue
+		}
+		if len(bodyBytes) > 1<<20 {
+			return nil, errors.New("AI 响应超过大小限制")
+		}
+
+		if resp.StatusCode == http.StatusInternalServerError || resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+			// 上游服务端暂时过载或并发抖动，记录并重试
+			lastErr = fmt.Errorf("AI 服务临时异常 (HTTP %d)", resp.StatusCode)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			// 严密脱敏：绝不在错误消息中泄露上游响应原文、网络私密信息或 Token
+			return nil, fmt.Errorf("AI 服务响应异常 (HTTP %d)", resp.StatusCode)
+		}
+
+		var chatResp chatCompletionResponse
+		if err := json.Unmarshal(bodyBytes, &chatResp); err != nil {
+			return nil, fmt.Errorf("解析 AI 响应 JSON 失败")
+		}
+
+		if chatResp.Error != nil && chatResp.Error.Message != "" {
+			return nil, errors.New("AI 服务返回错误")
+		}
+
+		if len(chatResp.Choices) == 0 {
+			return nil, errors.New("AI 未返回任何候选响应")
+		}
+
+		rawReply := strings.TrimSpace(chatResp.Choices[0].Message.Content)
+		return ParseAIResponse(rawReply)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		// 严密脱敏：绝不在错误消息中泄露上游响应原文、网络私密信息或 Token
-		return nil, fmt.Errorf("AI 服务响应异常 (HTTP %d)", resp.StatusCode)
-	}
-
-	var chatResp chatCompletionResponse
-	if err := json.Unmarshal(bodyBytes, &chatResp); err != nil {
-		return nil, fmt.Errorf("解析 AI 响应 JSON 失败")
-	}
-
-	if chatResp.Error != nil && chatResp.Error.Message != "" {
-		return nil, errors.New("AI 服务返回错误")
-	}
-
-	if len(chatResp.Choices) == 0 {
-		return nil, errors.New("AI 未返回任何候选响应")
-	}
-
-	rawReply := strings.TrimSpace(chatResp.Choices[0].Message.Content)
-	return ParseAIResponse(rawReply)
+	return nil, lastErr
 }
 
 type rawAIOutput struct {
@@ -289,4 +344,78 @@ func ParseAIResponse(raw string) (*Result, error) {
 		Tags:            tags,
 		Reminders:       reminders,
 	}, nil
+}
+
+// TestRawConnection 用于轻量级连通性测试
+func TestRawConnection(ctx context.Context, baseURL, apiKey, model string, timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	client := &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	reqBody := chatCompletionRequest{
+		Model: model,
+		Messages: []ChatMessage{
+			{Role: "user", Content: "你好，请回复五个字：连通测试成功"},
+		},
+		MaxTokens: 50,
+	}
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", err
+	}
+	url := fmt.Sprintf("%s/chat/completions", strings.TrimSuffix(baseURL, "/"))
+
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(time.Duration(attempt*500) * time.Millisecond):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = errors.New("连接 AI 服务失败")
+			continue
+		}
+
+		bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+		resp.Body.Close()
+		if err != nil {
+			lastErr = errors.New("读取 AI 服务响应失败")
+			continue
+		}
+
+		if resp.StatusCode == http.StatusInternalServerError || resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+			lastErr = fmt.Errorf("AI 服务临时繁忙 (HTTP %d)", resp.StatusCode)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("AI 服务返回异常状态 (HTTP %d)", resp.StatusCode)
+		}
+
+		var chatResp chatCompletionResponse
+		if err := json.Unmarshal(bodyBytes, &chatResp); err != nil {
+			return "", errors.New("解析响应 JSON 失败")
+		}
+		if len(chatResp.Choices) == 0 {
+			return "", errors.New("AI 服务未返回候选内容")
+		}
+		return strings.TrimSpace(chatResp.Choices[0].Message.Content), nil
+	}
+	return "", lastErr
 }

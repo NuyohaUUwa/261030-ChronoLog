@@ -221,6 +221,28 @@ export const useNotesStore = defineStore('notes', {
       calendarStore.fetchSummary();
     },
 
+    async reopenReminder(noteId: string, remId: string) {
+      const res = await api.reopenReminder(noteId, remId);
+      const note = this.notes.find((n) => n.id === noteId);
+      if (note) {
+        if (res.data?.updated_at) {
+          note.updated_at = res.data.updated_at;
+        }
+        if (res.data?.reminders) {
+          note.reminders = res.data.reminders;
+        } else {
+          const rem = note.reminders.find((r) => r.id === remId);
+          if (rem) {
+            rem.status = 'pending';
+          }
+        }
+      }
+
+      // 联动刷新日历提醒圆点
+      const calendarStore = useCalendarStore();
+      calendarStore.fetchSummary();
+    },
+
     async updateNote(id: string, polishedContent: string, tags: string[], updatedAt: string) {
       const res = await api.updateNote(id, {
         polished_content: polishedContent,

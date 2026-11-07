@@ -74,12 +74,13 @@ constraints: ""
 		t.Fatal(err)
 	}
 	llmClient := llm.NewMockClient()
+	dynamicClient := llm.NewDynamicClient(llmClient)
 
 	authHandler := NewAuthHandler(cfg, accountStore)
-	notesHandler := NewNotesHandler(cfg, mdStore, indexMgr, llmClient, promptMgr)
+	notesHandler := NewNotesHandler(cfg, mdStore, indexMgr, dynamicClient, promptMgr)
 	calendarHandler := NewCalendarHandler(cfg, indexMgr)
-	promptsHandler := NewPromptsHandler(cfg, promptMgr, llmClient, indexMgr)
-	systemHandler := NewSystemHandler(cfg, accountStore, mdStore, indexMgr)
+	promptsHandler := NewPromptsHandler(cfg, promptMgr, dynamicClient, indexMgr)
+	systemHandler := NewSystemHandler(cfg, accountStore, mdStore, indexMgr, dynamicClient)
 
 	r := gin.New()
 	apiV1 := r.Group("/api/v1")
@@ -101,6 +102,7 @@ constraints: ""
 			authRequired.DELETE("/notes/:id", notesHandler.DeleteNote)
 			authRequired.POST("/notes/:id/reminders/:rem_id/complete", notesHandler.CompleteReminder)
 			authRequired.POST("/notes/:id/reminders/:rem_id/cancel", notesHandler.CancelReminder)
+			authRequired.POST("/notes/:id/reminders/:rem_id/reopen", notesHandler.ReopenReminder)
 			authRequired.GET("/calendar/summary", calendarHandler.GetSummary)
 
 			adminRequired := authRequired.Group("")
@@ -108,6 +110,9 @@ constraints: ""
 			{
 				adminRequired.GET("/prompts", promptsHandler.GetPrompts)
 				adminRequired.POST("/system/rebuild-index", systemHandler.RebuildIndex)
+				adminRequired.GET("/system/ai-config", systemHandler.GetAIConfig)
+				adminRequired.PUT("/system/ai-config", systemHandler.UpdateAIConfig)
+				adminRequired.POST("/system/ai-config/test", systemHandler.TestAIConfig)
 			}
 		}
 	}
@@ -503,12 +508,137 @@ func TestAPI_ReminderCompleteAndCancel(t *testing.T) {
 		t.Fatalf("期望提醒状态为 cancelled, 得到: %+v", noteObj.Reminders)
 	}
 
-	// 3. 取消不存在的提醒应返回 404
+	// 3. 将已取消的待办重置恢复为未完成 (Reopen)
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/notes/%s/reminders/%s/reopen", noteID, remID), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("恢复待办失败: %d %s", w.Code, w.Body.String())
+	}
+	var reopenResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &reopenResp)
+	if reopenResp["updated_at"] == nil || reopenResp["updated_at"] == "" {
+		t.Fatalf("恢复待办响应缺少 updated_at")
+	}
+
+	// 验证提醒状态恢复为 pending
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/v1/notes/"+noteID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	_ = json.Unmarshal(w.Body.Bytes(), &noteObj)
+	if len(noteObj.Reminders) != 1 || noteObj.Reminders[0].Status != "pending" {
+		t.Fatalf("期望提醒状态恢复为 pending, 得到: %+v", noteObj.Reminders)
+	}
+
+	// 4. 先标记完成，再重置恢复为未完成
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/notes/%s/reminders/%s/complete", noteID, remID), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("标记完成失败: %d", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/notes/%s/reminders/%s/reopen", noteID, remID), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("将已完成待办重置为未完成失败: %d %s", w.Code, w.Body.String())
+	}
+
+	// 5. 取消/恢复不存在的提醒应返回 404
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/notes/%s/reminders/non_existent/cancel", noteID), nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("取消不存在的提醒期望 404, 得到 %d", w.Code)
+	}
+}
+
+func TestAPI_AdminAIConfig(t *testing.T) {
+	r, _, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// 注册并登录管理员
+	regAdmin, _ := json.Marshal(map[string]string{
+		"email":     "admin@test.local",
+		"password":  "adminpassword",
+		"admin_key": "test-admin-setup-key",
+	})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regAdmin))
+	r.ServeHTTP(w, req)
+	var adminResp AuthResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &adminResp)
+	adminToken := adminResp.Token
+
+	// 1. 获取 AI 配置
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/v1/system/ai-config", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("获取 AI 配置失败: %d %s", w.Code, w.Body.String())
+	}
+	var getResp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &getResp)
+	if getResp["mode"] != "mock" {
+		t.Fatalf("期望默认 mode 为 mock, 得到 %v", getResp["mode"])
+	}
+
+	// 2. 测试配置接口（Mock 模式直接通过）
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, "/api/v1/system/ai-config/test", bytes.NewReader([]byte(`{"mode":"mock"}`)))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("测试 Mock AI 连通性失败: %d %s", w.Code, w.Body.String())
+	}
+
+	// 3. 更新 AI 配置
+	updateBody, _ := json.Marshal(map[string]interface{}{
+		"mode":            "remote",
+		"base_url":        "https://api.deepseek.com",
+		"api_key":         "sk-dummy-test-key-for-unit-test-12345678",
+		"model":           "deepseek-flash",
+		"timeout_seconds": 60,
+	})
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPut, "/api/v1/system/ai-config", bytes.NewReader(updateBody))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("更新 AI 配置失败: %d %s", w.Code, w.Body.String())
+	}
+	var updateResp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &updateResp)
+	if updateResp["mode"] != "remote" || updateResp["model"] != "deepseek-flash" {
+		t.Fatalf("更新后数据不匹配: %+v", updateResp)
+	}
+	if updateResp["api_key_masked"] != "sk-dum...5678" {
+		t.Fatalf("期望脱敏为 sk-dum...5678, 得到: %v", updateResp["api_key_masked"])
+	}
+
+	// 4. 普通用户访问应被 403 拦截
+	regUser, _ := json.Marshal(map[string]string{
+		"email":    "normal@test.local",
+		"password": "normalpassword",
+	})
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regUser))
+	r.ServeHTTP(w, req)
+	var userResp AuthResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &userResp)
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/v1/system/ai-config", nil)
+	req.Header.Set("Authorization", "Bearer "+userResp.Token)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("普通用户应被 403 拦截, 实际得到: %d", w.Code)
 	}
 }

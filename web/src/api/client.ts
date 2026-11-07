@@ -109,6 +109,9 @@ export default {
   cancelReminder(noteId: string, remId: string) {
     return apiClient.post<{ message: string; note_id: string; rem_id: string; updated_at: string; reminders: Reminder[] }>(`/notes/${noteId}/reminders/${remId}/cancel`);
   },
+  reopenReminder(noteId: string, remId: string) {
+    return apiClient.post<{ message: string; note_id: string; rem_id: string; updated_at: string; reminders: Reminder[] }>(`/notes/${noteId}/reminders/${remId}/reopen`);
+  },
 
   // 日历与标签
   getCalendarSummary(year?: number, month?: number) {
@@ -127,5 +130,42 @@ export default {
   },
   testPrompt(rawContent: string) {
     return apiClient.post('/prompts/test', { raw_content: rawContent });
+  },
+
+  // AI 基础配置与模型管理（管理员专属）
+  getAIConfig() {
+    return apiClient.get<{
+      mode: string;
+      base_url: string;
+      model: string;
+      timeout_seconds: number;
+      has_api_key: boolean;
+      api_key_masked: string;
+    }>('/system/ai-config');
+  },
+  updateAIConfig(data: {
+    mode: string;
+    base_url: string;
+    api_key?: string;
+    model: string;
+    timeout_seconds?: number;
+  }) {
+    return apiClient.put<{
+      message: string;
+      mode: string;
+      base_url: string;
+      model: string;
+      timeout_seconds: number;
+      has_api_key: boolean;
+      api_key_masked: string;
+    }>('/system/ai-config', data);
+  },
+  testAIConfig(data?: {
+    mode?: string;
+    base_url?: string;
+    api_key?: string;
+    model?: string;
+  }) {
+    return apiClient.post<{ status: string; latency_ms: number; reply: string }>('/system/ai-config/test', data || {});
   },
 };

@@ -21,8 +21,9 @@ type Config struct {
 	Prompts       PromptsConfig       `yaml:"prompts"`
 
 	// 计算字段
-	Location *time.Location `yaml:"-"`
-	RootDir  string         `yaml:"-"`
+	Location   *time.Location `yaml:"-"`
+	RootDir    string         `yaml:"-"`
+	ConfigPath string         `yaml:"-"`
 }
 
 type ServerConfig struct {
@@ -130,6 +131,7 @@ func LoadConfig() (*Config, error) {
 	}
 
 	if configPath != "" {
+		cfg.ConfigPath = configPath
 		data, err := os.ReadFile(configPath)
 		if err != nil {
 			return nil, fmt.Errorf("读取配置文件失败 (%s): %w", configPath, err)
@@ -266,6 +268,58 @@ func (c *Config) IsAdmin(email string) bool {
 		}
 	}
 	return false
+}
+
+// SaveAIConfig 保存 AI 配置到配置文件并热更新当前内存配置
+func (c *Config) SaveAIConfig(newAI AIConfig) error {
+	newAI.Mode = strings.ToLower(strings.TrimSpace(newAI.Mode))
+	if newAI.Mode != "mock" && newAI.Mode != "remote" {
+		return fmt.Errorf("AI_MODE 必须是 mock 或 remote")
+	}
+	if newAI.TimeoutSeconds <= 0 {
+		newAI.TimeoutSeconds = 30
+	}
+	if newAI.Mode == "remote" {
+		u, parseErr := url.Parse(newAI.BaseURL)
+		if parseErr != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("AI 地址必须为无凭据及查询参数的 HTTP(S) 地址")
+		}
+		if strings.TrimSpace(newAI.Model) == "" {
+			return fmt.Errorf("remote 模式必须配置 AI_MODEL")
+		}
+		if strings.TrimSpace(newAI.APIKey) == "" {
+			newAI.APIKey = c.AI.APIKey
+		}
+	}
+
+	if c.ConfigPath != "" {
+		data, err := os.ReadFile(c.ConfigPath)
+		if err == nil {
+			var rawMap map[string]interface{}
+			if err := yaml.Unmarshal(data, &rawMap); err == nil {
+				aiMap := map[string]interface{}{
+					"mode":            newAI.Mode,
+					"base_url":        newAI.BaseURL,
+					"api_key":         newAI.APIKey,
+					"model":           newAI.Model,
+					"timeout_seconds": newAI.TimeoutSeconds,
+				}
+				rawMap["ai"] = aiMap
+
+				outBytes, err := yaml.Marshal(rawMap)
+				if err == nil {
+					dir := filepath.Dir(c.ConfigPath)
+					tmpFile := filepath.Join(dir, fmt.Sprintf(".config_%d.tmp", time.Now().UnixNano()))
+					if err := os.WriteFile(tmpFile, outBytes, 0600); err == nil {
+						_ = os.Rename(tmpFile, c.ConfigPath)
+					}
+				}
+			}
+		}
+	}
+
+	c.AI = newAI
+	return nil
 }
 
 func parseCommaSeparated(s string) []string {

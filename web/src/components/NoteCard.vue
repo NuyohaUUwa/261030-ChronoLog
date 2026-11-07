@@ -37,19 +37,31 @@
           </div>
           <div
             v-else-if="rem.status === 'completed'"
-            class="flex items-center space-x-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-400 line-through"
-            title="已完成"
+            class="flex items-center space-x-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-400 group/rem"
+            title="已完成待办，点击可恢复为未完成"
           >
-            <Check class="w-3 h-3 text-emerald-500" />
-            <span>{{ rem.title }}</span>
+            <span class="line-through">{{ rem.title }}</span>
+            <button
+              @click.stop="handleReopenReminder(rem.id)"
+              title="点击恢复为未完成"
+              class="ml-1 text-slate-400 hover:text-brand-600 transition-colors flex items-center"
+            >
+              <RotateCcw class="w-3 h-3" />
+            </button>
           </div>
           <div
             v-else-if="rem.status === 'cancelled'"
-            class="flex items-center space-x-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-400 line-through opacity-75"
-            title="已取消"
+            class="flex items-center space-x-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-400 opacity-75 group/rem"
+            title="已取消待办，点击可恢复为未完成"
           >
-            <Ban class="w-3 h-3 text-slate-400" />
-            <span>{{ rem.title }} (已取消)</span>
+            <span class="line-through">{{ rem.title }} (已取消)</span>
+            <button
+              @click.stop="handleReopenReminder(rem.id)"
+              title="点击恢复为未完成"
+              class="ml-1 text-slate-400 hover:text-brand-600 transition-colors flex items-center"
+            >
+              <RotateCcw class="w-3 h-3" />
+            </button>
           </div>
         </template>
 
@@ -197,7 +209,6 @@ import {
   Clock,
   Bell,
   CheckCircle,
-  Check,
   Trash2,
   Sparkles,
   AlertCircle,
@@ -208,7 +219,6 @@ import {
   FileText,
   Pencil,
   XCircle,
-  Ban,
 } from 'lucide-vue-next';
 import { Note } from '../api/client';
 import { useNotesStore } from '../stores/notes';
@@ -327,6 +337,10 @@ function handleCompleteReminder(remId: string) {
 
 function handleCancelReminder(remId: string) {
   notesStore.cancelReminder(props.note.id, remId);
+}
+
+function handleReopenReminder(remId: string) {
+  notesStore.reopenReminder(props.note.id, remId);
 }
 
 function handleDelete() {

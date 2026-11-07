@@ -30,8 +30,8 @@
         </div>
       </aside>
 
-      <!-- 中栏 (主工作流 / 5 cols 或移动端全宽): 快录 + 笔记流 -->
-      <main class="lg:col-span-8 xl:col-span-5 space-y-5">
+      <!-- 中栏 (主工作流 / 8 cols 双栏大视野): 快录 + 笔记流 -->
+      <main class="lg:col-span-8 xl:col-span-8 space-y-5">
         <!-- 顶部常驻极速快录条 -->
         <QuickCapture />
 
@@ -124,23 +124,6 @@
           </div>
         </div>
       </main>
-
-      <!-- 右栏 (320px / 3 cols): 提示词调优看板 (管理员可见) 或 产品特性卡 -->
-      <aside class="hidden xl:block xl:col-span-3 space-y-5">
-        <PromptTester v-if="authStore.isAdmin" />
-        <div v-else class="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-5 space-y-3">
-          <div class="flex items-center space-x-2 text-brand-600 font-semibold text-sm">
-            <ShieldCheck class="w-4 h-4" />
-            <span>纯文本平铺数据保障</span>
-          </div>
-          <p class="text-xs text-slate-500 leading-relaxed">
-            您的所有记录均实时以 <strong>Markdown + YAML FrontMatter</strong> 平铺存储于独立目录中，不依赖任何闭源数据库，支持随时无损迁移。
-          </p>
-          <div class="pt-2 border-t border-slate-100 text-[11px] text-slate-400">
-            支持 Ctrl+Enter 快捷秒发随手记。
-          </div>
-        </div>
-      </aside>
     </div>
   </div>
 </template>
@@ -148,21 +131,18 @@
 <script setup lang="ts">
 import { onMounted, nextTick } from 'vue';
 import { useRoute } from 'vue-router';
-import { Tag as TagIcon, Filter, Sparkles, ShieldCheck, AlertTriangle, RotateCcw } from 'lucide-vue-next';
+import { Tag as TagIcon, Filter, Sparkles, AlertTriangle, RotateCcw } from 'lucide-vue-next';
 import api from '../api/client';
 import { useNotesStore } from '../stores/notes';
 import { useCalendarStore } from '../stores/calendar';
-import { useAuthStore } from '../stores/auth';
 import DualCalendar from '../components/DualCalendar.vue';
 import QuickCapture from '../components/QuickCapture.vue';
 import NoteCard from '../components/NoteCard.vue';
 import TagFilterBar from '../components/TagFilterBar.vue';
-import PromptTester from '../components/PromptTester.vue';
 
 const route = useRoute();
 const notesStore = useNotesStore();
 const calendarStore = useCalendarStore();
-const authStore = useAuthStore();
 
 onMounted(async () => {
   await notesStore.fetchNotes();

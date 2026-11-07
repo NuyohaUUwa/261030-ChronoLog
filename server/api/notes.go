@@ -470,3 +470,62 @@ func (h *NotesHandler) CancelReminder(c *gin.Context) {
 		"reminders":  updatedReminders,
 	})
 }
+
+// ReopenReminder 将已完成或已取消的待办提醒重置为未完成 (pending)
+func (h *NotesHandler) ReopenReminder(c *gin.Context) {
+	email := c.GetString("user_email")
+	noteID := c.Param("id")
+	remID := c.Param("rem_id")
+
+	if err := storage.ValidateNoteID(noteID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "笔记不存在"}})
+		return
+	}
+
+	now := time.Now().In(h.cfg.Location)
+	var updatedReminders []storage.Reminder
+	updatedNote, err := h.mdStore.MutateNoteAtomic(email, noteID, func(note *storage.Note) error {
+		found := false
+		for i := range note.Reminders {
+			if note.Reminders[i].ID == remID {
+				note.Reminders[i].Status = "pending"
+				// 判断提醒时间：未来时间恢复通知，已过期则静默不重推防骚扰
+				if parsedTime, err := time.Parse(time.RFC3339, note.Reminders[i].RemindAt); err == nil {
+					if parsedTime.After(now) {
+						note.Reminders[i].NotificationStatus = "pending"
+						note.Reminders[i].NotificationRetries = 0
+					}
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return errors.New("REMINDER_NOT_FOUND")
+		}
+		updatedReminders = note.Reminders
+		note.UserEdited = true
+		return nil
+	}, h.cfg.Location)
+
+	if err != nil {
+		if err.Error() == "REMINDER_NOT_FOUND" {
+			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "REMINDER_NOT_FOUND", "message": "待办提醒项不存在"}})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "STORAGE_ERROR", "message": err.Error()}})
+		return
+	}
+
+	if idx, err := h.indexMgr.GetUserIndex(email); err == nil {
+		_ = idx.IndexNote(updatedNote, h.cfg.Location)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":    "待办已重置为未完成",
+		"note_id":    noteID,
+		"rem_id":     remID,
+		"updated_at": updatedNote.UpdatedAt,
+		"reminders":  updatedReminders,
+	})
+}

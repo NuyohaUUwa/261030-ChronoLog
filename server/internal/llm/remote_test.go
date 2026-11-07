@@ -19,7 +19,7 @@ func TestRemotePayloadAndSafeErrors(t *testing.T) {
 				}
 				var body chatCompletionRequest
 				json.NewDecoder(r.Body).Decode(&body)
-				if body.Temperature != 0 || body.MaxTokens != 42 || len(body.Messages) != 4 {
+				if body.Temperature != nil || body.MaxTokens != 42 || len(body.Messages) != 4 {
 					t.Error("model parameters or examples not sent")
 				}
 				switch scenario {
