@@ -1,6 +1,6 @@
 {
-  "binary_sha256": "0ee882a5ec94009ca8dd248c02a38ae8b18b5a0f0b635219c818b86064102d38",
-  "built_at": "2026-11-07T06:47:18.2211528Z",
-  "source_commit": "c48a931",
+  "binary_sha256": "749cea2c26cdb3d9eff918090b1c45c5eff15e2bb4d8cd0c2ba5ed7bf4ece5e9",
+  "built_at": "2026-11-07T09:35:36.1105711Z",
+  "source_commit": "d407041",
   "target": "linux/amd64"
 }
